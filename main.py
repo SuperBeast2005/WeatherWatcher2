@@ -28,19 +28,24 @@ mws2.Log("WiFi-Connection active!", MicroWebSrv2.INFO)
 #Endpoint for retrieving Env-Param's
 @WebRoute(GET, '/')
 def getEnvironmentParameters(mws2, request):
+    #Measured Environment Parameters getting logged onto the ESP32 Web-Server
     timestamp = (str(rtc.datetime()[0])+"."+str(rtc.datetime()[1])+"."+str(rtc.datetime()[2])+" "+str(rtc.datetime()[4])+":"+str(rtc.datetime()[5])+":"+str(rtc.datetime()[6]))
     esp_freq = str(machine.freq() / 1000000) + " MHz"
     esp_temp = str(round((esp32.raw_temperature()-32)/1.8, 1)) + " Celsius"
-            
+    env_temp = ""
+    env_humi = ""
+    env_co2p = ""
+    env_brig = ""
+    
     #Dictionary, which represents a JSON
     data = {
         "TIMESTAMP": timestamp,
         "ESP_FREQ": esp_freq,
         "ESP_TEMP": esp_temp,
-        "ENV_TEMP": "",
-        "ENV_HUMI": "",
-        "ENV_CO2P": "",
-        "ENV_BRIG": ""
+        "ENV_TEMP": env_temp,
+        "ENV_HUMI": env_humi,
+        "ENV_CO2P": env_co2p,
+        "ENV_BRIG": env_brig
     }
     try:
         #Returns Data-Dictionary as a JSON-Object
@@ -61,16 +66,20 @@ if __name__ == "__main__":
             timestamp = (str(rtc.datetime()[0])+"."+str(rtc.datetime()[1])+"."+str(rtc.datetime()[2])+" "+str(rtc.datetime()[4])+":"+str(rtc.datetime()[5])+":"+str(rtc.datetime()[6]))
             esp_freq = str(machine.freq() / 1000000) + " MHz"
             esp_temp = str(round((esp32.raw_temperature()-32)/1.8, 1)) + " Celsius"
+            env_temp = ""
+            env_humi = ""
+            env_co2p = ""
+            env_brig = ""
             
             #Dictionary, which represents a JSON
             data = {
                 "TIMESTAMP": timestamp,
                 "ESP_FREQ": esp_freq,
                 "ESP_TEMP": esp_temp,
-                "ENV_TEMP": "",
-                "ENV_HUMI": "",
-                "ENV_CO2P": "",
-                "ENV_BRIG": ""
+                "ENV_TEMP": env_temp,
+                "ENV_HUMI": env_humi,
+                "ENV_CO2P": env_co2p,
+                "ENV_BRIG": env_brig
             }
             logs = mws2.Log(data, MicroWebSrv2.INFO)
             time.sleep_ms(1000)
