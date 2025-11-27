@@ -1,4 +1,4 @@
-from MicroWebSrv2 import *
+from ESP32.MicroWebSrv2 import *
 import machine
 from machine import RTC
 import esp32

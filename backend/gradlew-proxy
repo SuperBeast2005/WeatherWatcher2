@@ -1,0 +1,105 @@
+#!/bin/bash -e
+
+[[ $DEBUG =~ (1|true) ]] && set -x
+
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+
+# Return JAVA_OPTS proxy specific arguments from named environment variable.
+#
+# Synopsis:
+#
+#   get_java_proxy_args_from_env <env_name> [<return_env_name>]
+#
+# Arguments:
+#   - <env_name>        : name of the proxy environment variable (one of: HTTP_PROXY, HTTPS_PROXY, http_proxy, https_proxy)
+#   - <return_env_name> : name of the environment variable in which the return value will be stored. If no value is provided
+#                         then the return value is echoed.
+#
+# Return:
+#   - string that contains the JAVA_OPTS proxy specific arguments in the form:
+#  
+#     -D<proto>.proxyHost=<hostname>
+#     -D<proto>.proxyPort=<port>
+#     -D<proto>.proxyUser=<username>
+#     -D<proto>.proxyPassword=<password>
+#
+#   - The proxy value is expected to be in the form: http[s]://[<username>[:password]@]<hostname>:<port>:
+#
+#     - <proto>    : The protocol 'http' or 'https' determined from the <env_name>.
+#     - <hostname> : The proxy hostname
+#     - <port>     : The proxy port
+#     - <username> : User name for proxy authentication
+#     - <password> : Password for proxy authentication
+#
+#  Eg: for the environment variable "http_proxy=http://alice:mysecret@10.0.0.1:3128" and the call:
+#
+#    get_java_proxy_args_from_env "http_proxy" "result"
+#
+#  The "result" value will be set to "-Dhttp.proxyHost=10.0.0.1 -Dhttp.proxyPort=3128 -Dhttp.proxyUser=alice -Dhttp.proxyPassword=mysecret"
+#
+function get_java_proxy_args_from_env {
+    local proxy_env=${1}
+    local __resultvar=${2}
+
+    local proxy_proto=${proxy_env%%_*}
+    proxy_proto=${proxy_proto,,}
+
+    local __result=""
+    __result=$(set +x ; echo "${!proxy_env}" | \
+        sed "s|[^:]*://\([^/]*\).*|\1|;
+            s|\(\([^:]*\)\(:\([^:]*\)\)\{0,1\}@\)\{0,1\}\([^:]*\)\(:\([^:]*\)\)\{0,1\}|-D${proxy_proto}.proxyHost=\5 -D${proxy_proto}.proxyPort=\7 -D${proxy_proto}.proxyUser=\2 -D${proxy_proto}.proxyPassword=\4|")
+
+    if [[ "$__resultvar" ]]; then
+        eval "$__resultvar='$__result'"
+    else
+        echo "$__result"
+    fi
+}
+
+# Return JAVA_OPTS no-/proxy specific arguments from named environment variable.
+#
+# Synopsis:
+#
+#   get_java_proxy_args [<return_env_name>]
+#
+# Arguments:
+#   - <return_env_name> : name of the environment variable in which the return value will be stored. If no value is provided
+#                         then the return value is echoed.
+#
+# Return:
+#   - string that contains the JAVA_OPTS proxy specific arguments (see: https://docs.oracle.com/javase/8/docs/technotes/guides/net/proxies.html)
+#
+function get_java_proxy_args {
+    local __resultvar=${1:-}
+    local __result=""
+    local __java_opts_result
+
+    # Make sure to conside both accepted env vars for proxy (upper-/lower-case)
+    : ${http_proxy:=$HTTP_PROXY}
+    : ${https_proxy:=$HTTPS_PROXY}
+    : ${ftp_proxy:=$FTP_PROXY}
+    for e in http_proxy https_proxy ftp_proxy; do
+        if [[ -n ${!e} ]]; then
+            get_java_proxy_args_from_env "$e" __java_opts_result
+            __result+="${__java_opts_result} "
+        fi
+    done
+
+    : ${no_proxy:=$NO_PROXY}
+    if [[ -n ${no_proxy} ]]; then
+        local java_no_proxy="${no_proxy//,/|}"
+        __result+="-Dhttp.nonProxyHosts='${java_no_proxy}' -Dhttps.nonProxyHosts='${java_no_proxy}'  -Dftp.nonProxyHosts='${java_no_proxy}'"
+    fi
+
+    if [[ "$__resultvar" ]]; then
+        eval "$__resultvar='$__result'"
+    else
+        echo "$__result"
+    fi
+}
+
+JAVA_OPTS+=" $(get_java_proxy_args)"
+export JAVA_OPTS
+
+# Execute gradlew with all passed arguments
+exec "${SCRIPT_DIR}/gradlew" "$@"

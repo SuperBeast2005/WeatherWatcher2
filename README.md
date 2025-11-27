@@ -1,24 +1,30 @@
-# Weather Watcher
+# Weather Watcher Software
 
-ESP32 Web-Server mit GET Endpunkt, um Sensoren-Daten zu extrahieren
+## Description
+This project aims at creating an application which logs climate details captured by ESP32 Microcomputers with sensors.
 
-WeatherWatcher/
-│── MicroWebSrv2/
-│── main.py
-│── README.md
-│── requirements.txt
+## Resources and Technologies
 
-## Setup
+ESP32 Microcontrollers with climate sensors for measuring climate details:
+- temperature
+- humidity
+- oxygen concentration
+- light intensity
+- CaaS (Container as a Service) with one Container for each Service
+  - Telekom Open Cloud Server and Git for deployment
+  - Java Spring
+  - Micropython
+  - Postgres
+  - Grafana
 
-Anmerkung: requirements.txt aktuell noch leer, da alle verwendeten Module Teil des MicroPython Standard Module Packet ist
+Architecture:
 
-### 1. Repository auf ESP32 klonen
+This project will work in a container structure (probably Docker or Kubernetes) There will be 3 containers running serverside which are:
 
-main.py sowie die MicroWebSrv2 Library bzw. das ganze Repository auf den ESP32 speichern
+1. Frontend Webserver (probably implementing a Grafana Dashboard)
+2. Backend Webserver (REST API with Spring)
+3. Database (Postgres)
 
+And one Micro Python Webserver on each ESP32.
 
-### 2. ESP32 ausführen
-
-Via Thonny o.Ä. den ESP32 ausführen lassen um main.py auf dem ESP32 auszuführen 
-
-WICHTIG: Die zuletzt gespeicherte Version des Repository's auf dem ESP32 muss außerhalb des ESP32/lokal gespeichert & comittet werden!
+![component flowchart](Documentation/images/weatherwatcher1.png) 
