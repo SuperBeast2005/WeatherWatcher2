@@ -19,13 +19,17 @@ WIFI_SSID = "TP-Link_58E8"
 WIFI_PWD = "15473202"
 
 #Init WIFI-Connection
-wifi = network.WLAN(network.STA_IF) # use Station Mode
-wifi.active(True)
-wifi.config(dhcp_hostname = "ESP32-Sensor")
-wifi.connect(WIFI_SSID, WIFI_PWD)
-timestamp = (str(rtc.datetime()[0])+"."+str(rtc.datetime()[1])+"."+str(rtc.datetime()[2])+" "+str(rtc.datetime()[4])+":"+str(rtc.datetime()[5])+":"+str(rtc.datetime()[6]))
-mws2.Log("Timestamp: " + timestamp + ", Msg: WiFi-Connection active!", MicroWebSrv2.INFO)
-
+try:
+    wifi = network.WLAN(network.STA_IF) # use Station Mode
+    wifi.active(True)
+    wifi.config(dhcp_hostname = "ESP32-Sensor")
+    wifi.connect(WIFI_SSID, WIFI_PWD)
+    timestamp = (str(rtc.datetime()[0])+"."+str(rtc.datetime()[1])+"."+str(rtc.datetime()[2])+" "+str(rtc.datetime()[4])+":"+str(rtc.datetime()[5])+":"+str(rtc.datetime()[6]))
+    mws2.Log("Timestamp: " + timestamp + ", Msg: WiFi-Connection active!", MicroWebSrv2.INFO)
+except Exception as e:
+    timestamp = (str(rtc.datetime()[0])+"."+str(rtc.datetime()[1])+"."+str(rtc.datetime()[2])+" "+str(rtc.datetime()[4])+":"+str(rtc.datetime()[5])+":"+str(rtc.datetime()[6]))
+    mws2.Log("Timestamp: " + timestamp + ", Msg: WiFi-Connection failed! Exception: " + e, MicroWebSrv2.ERROR)
+    
 #Endpoint for retrieving Env-Param's
 @WebRoute(GET, '/')
 def getEnvironmentParameters(mws2, request):
@@ -55,7 +59,7 @@ def getEnvironmentParameters(mws2, request):
         
     except Exception as e:
         request.ResponseReturnJSON(500, {"error": "internal error"})
-        mws2.Log("Timestamp: " + timestamp + ", Msg: Occured Exception: " + e, MicroWebSrv2.WARNING)
+        mws2.Log("Timestamp: " + timestamp + ", Msg: Occured Exception: " + e, MicroWebSrv2.ERROR)
 
 if __name__ == "__main__":
     print(wifi.ifconfig()[0])
@@ -86,7 +90,7 @@ if __name__ == "__main__":
             time.sleep_ms(1000)
             
         except Exception as e:
-            mws2.Log("Timestamp: " + timestamp + ", Msg: Occured Exception: " + e, MicroWebSrv2.WARNING)
+            mws2.Log("Timestamp: " + timestamp + ", Msg: Occured Exception: " + e, MicroWebSrv2.ERROR)
 else:
     #Close WIFI-Connection and stop Web-Server
     wifi.disconnect()
