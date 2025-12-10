@@ -25,6 +25,9 @@ This project will work in a container structure (probably Docker or Kubernetes) 
 2. Backend Webserver (REST API with Spring)
 3. Database (Postgres)
 
+![component flowchart](Documentation/images/weatherwatcher1.png) 
+
 And one Micro Python Webserver on each ESP32.
 
-![component flowchart](Documentation/images/weatherwatcher1.png) 
+![component flowchart](Documentation/images/circuit.png) 
+
