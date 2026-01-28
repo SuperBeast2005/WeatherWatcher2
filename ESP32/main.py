@@ -5,6 +5,8 @@ import socket
 import time
 import json
 from machine import RTC
+from machine import Pin
+import dht
 
 # HIER MIT EIGENEM WLAN KONFIGURIEREN
 WIFI_SSID = "iPhone von A"
@@ -60,18 +62,28 @@ def create_metrics_json():
     esp_freq = machine.freq() / 1000000 # MHz
     
     try:
+        dht11 = dht.DHT11(Pin(33, Pin.IN))
+        sensor = dht11.measure()
+        
         # Interne Temperatur (nicht auf allen ESP32 genau kalibriert)
         esp_temp = round((esp32.raw_temperature() - 32) / 1.8, 1)
-    except:
+        env_temp = sensor.temperature()
+        env_humi = sensor.humidity()
+        
+        # Sekunde warten zur Sicherheit
+        time.sleep(1)
+        
+    except Exception as e:
         esp_temp = 0.0
+        print("FEHLER: " + e)
 
     # Hier später echte Sensordaten einfügen
     data = {
         "TIMESTAMP": timestamp,
         "ESP_FREQ": esp_freq,
         "ESP_TEMP": esp_temp,
-        "ENV_TEMP": 0,
-        "ENV_HUMI": 0,
+        "ENV_TEMP": env_temp,
+        "ENV_HUMI": env_humi,
         "ENV_CO2P": 0,
         "ENV_BRIG": 0
     }
@@ -152,3 +164,5 @@ if __name__ == "__main__":
             print(f"Server-Fehler: {e}")
             # Bei kritischen Fehlern kurz warten
             time.sleep(1)
+
+
