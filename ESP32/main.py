@@ -4,8 +4,7 @@ import network
 import socket
 import time
 import json
-from machine import RTC
-from machine import Pin
+from machine import RTC, Pin, ADC
 import dht
 
 # HIER MIT EIGENEM WLAN KONFIGURIEREN
@@ -58,17 +57,23 @@ def connect_wifi():
 
 def create_metrics_json():
     """Liest Sensoren und erstellt das JSON-Objekt."""
-    timestamp = get_timestamp()
-    esp_freq = machine.freq() / 1000000 # MHz
-    
+
     try:
+        #Temperature- and Humidity-Sensor
         dht11 = dht.DHT11(Pin(33, Pin.IN))
         sensor = dht11.measure()
         
-        # Interne Temperatur (nicht auf allen ESP32 genau kalibriert)
+        #Lightsensor
+        ldr = AADC(Pin(34, Pin.IN))
+        ldr.atten(ADC.ATTN_11DB)
+                
+        #Measured Data
+        timestamp = get_timestamp()
+        esp_freq = machine.freq() / 1000000 # MHz
         esp_temp = round((esp32.raw_temperature() - 32) / 1.8, 1)
         env_temp = sensor.temperature()
         env_humi = sensor.humidity()
+        env_brig = ldr.read()
         
         # Sekunde warten zur Sicherheit
         time.sleep(1)
@@ -85,7 +90,7 @@ def create_metrics_json():
         "ENV_TEMP": env_temp,
         "ENV_HUMI": env_humi,
         "ENV_CO2P": 0,
-        "ENV_BRIG": 0
+        "ENV_BRIG": env_brig
     }
     return json.dumps(data)
 
@@ -164,5 +169,6 @@ if __name__ == "__main__":
             print(f"Server-Fehler: {e}")
             # Bei kritischen Fehlern kurz warten
             time.sleep(1)
+
 
 
