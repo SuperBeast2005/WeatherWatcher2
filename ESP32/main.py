@@ -1,97 +1,174 @@
-from ESP32.MicroWebSrv2 import *
 import machine
-from machine import RTC
 import esp32
-import time
 import network
 import socket
+import time
+import json
+from machine import RTC, Pin, ADC
+import dht
 
-#Init Real Time Clock for Logging
+# HIER MIT EIGENEM WLAN KONFIGURIEREN
+WIFI_SSID = "iPhone von A"
+WIFI_PWD  = "wehweh123"
+SERVER_PORT = 80
+
+# RTC initialisieren
 rtc = machine.RTC()
 
-#Init the WebServer and a managed Pool and bind IP-Address
-mws2 = MicroWebSrv2()
-mws2.SetEmbeddedConfig()
-mws2.StartManaged()
+def get_timestamp():
+    """Erstellt einen formatierten Zeitstempel."""
+    t = rtc.datetime()
+    # Format: YYYY.MM.DD HH:MM:SS
+    return "{:04d}.{:02d}.{:02d} {:02d}:{:02d}:{:02d}".format(t[0], t[1], t[2], t[4], t[5], t[6])
 
-#WIFI-Credentials
-WIFI_SSID = "TP-Link_58E8"
-WIFI_PWD = "15473202"
+def connect_wifi():
+    """Verbindet mit WiFi und deaktiviert den Energiesparmodus."""
+    print(">>> Starte WiFi Verbindung...")
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
 
-#Init WIFI-Connection
-try:
-    wifi = network.WLAN(network.STA_IF) # use Station Mode
-    wifi.active(True)
-    wifi.config(dhcp_hostname = "ESP32-Sensor")
-    wifi.connect(WIFI_SSID, WIFI_PWD)
-    timestamp = (str(rtc.datetime()[0])+"."+str(rtc.datetime()[1])+"."+str(rtc.datetime()[2])+" "+str(rtc.datetime()[4])+":"+str(rtc.datetime()[5])+":"+str(rtc.datetime()[6]))
-    mws2.Log("Timestamp: " + timestamp + ", Msg: WiFi-Connection active!", MicroWebSrv2.INFO)
-except Exception as e:
-    timestamp = (str(rtc.datetime()[0])+"."+str(rtc.datetime()[1])+"."+str(rtc.datetime()[2])+" "+str(rtc.datetime()[4])+":"+str(rtc.datetime()[5])+":"+str(rtc.datetime()[6]))
-    mws2.Log("Timestamp: " + timestamp + ", Msg: WiFi-Connection failed! Exception: " + e, MicroWebSrv2.ERROR)
+    try:
+        wlan.config(pm=0)
+        print(">> WLAN-Power-Management deaktiviert (pm=0) -> Maximale Leistung.")
+    except Exception as e:
+        print(f">> Warnung beim Setzen von pm=0: {e}")     # Deaktiviert den WiFi-Energiesparmodus (pm=0), verhindert hohe Latenzen und Timeouts.
+
+    wlan.config(dhcp_hostname="ESP32-Sensor")
     
-#Endpoint for retrieving Env-Param's
-@WebRoute(GET, '/')
-def getEnvironmentParameters(mws2, request):
-    #Measured Environment Parameters getting logged onto the ESP32 Web-Server
-    timestamp = (str(rtc.datetime()[0])+"."+str(rtc.datetime()[1])+"."+str(rtc.datetime()[2])+" "+str(rtc.datetime()[4])+":"+str(rtc.datetime()[5])+":"+str(rtc.datetime()[6]))
-    esp_freq = str(machine.freq() / 1000000) + " MHz"
-    esp_temp = str(round((esp32.raw_temperature()-32)/1.8, 1)) + " Celsius"
-    env_temp = ""
-    env_humi = ""
-    env_co2p = ""
-    env_brig = ""
-    
-    #Dictionary, which represents a JSON
+    if not wlan.isconnected():
+        print(f"Verbinde mit {WIFI_SSID}...")
+        wlan.connect(WIFI_SSID, WIFI_PWD)
+
+        # Warten mit Timeout (max 15 sek)
+        for i in range(15):
+            if wlan.isconnected():
+                break
+            time.sleep(1)
+            print(".", end="")
+        print("")
+
+    if wlan.isconnected():
+        ip = wlan.ifconfig()[0]
+        print(f"VERBUNDEN! IP: {ip}")
+        return ip
+    else:
+        print("FEHLER: Keine WLAN-Verbindung möglich.")
+        return None
+
+def create_metrics_json():
+    """Liest Sensoren und erstellt das JSON-Objekt."""
+
+    try:
+        #Temperature- and Humidity-Sensor
+        dht11 = dht.DHT11(Pin(33, Pin.IN))
+        sensor = dht11.measure()
+        
+        #Lightsensor
+        ldr = AADC(Pin(34, Pin.IN))
+        ldr.atten(ADC.ATTN_11DB)
+                
+        #Measured Data
+        timestamp = get_timestamp()
+        esp_freq = machine.freq() / 1000000 # MHz
+        esp_temp = round((esp32.raw_temperature() - 32) / 1.8, 1)
+        env_temp = sensor.temperature()
+        env_humi = sensor.humidity()
+        env_brig = ldr.read()
+        
+        # Sekunde warten zur Sicherheit
+        time.sleep(1)
+        
+    except Exception as e:
+        esp_temp = 0.0
+        print("FEHLER: " + e)
+
+    # Hier später echte Sensordaten einfügen
     data = {
         "TIMESTAMP": timestamp,
         "ESP_FREQ": esp_freq,
         "ESP_TEMP": esp_temp,
         "ENV_TEMP": env_temp,
         "ENV_HUMI": env_humi,
-        "ENV_CO2P": env_co2p,
+        "ENV_CO2P": 0,
         "ENV_BRIG": env_brig
     }
-    try:
-        #Returns Data-Dictionary as a JSON-Object
-        request.ReturnOkJSON(data)
-        mws2.Log("Timestamp: " + timestamp + ", Msg: Successfully retrieved real-time data from the ESP32 Environment Parameters Endpoint!")
-        
-    except Exception as e:
-        request.ResponseReturnJSON(500, {"error": "internal error"})
-        mws2.Log("Timestamp: " + timestamp + ", Msg: Occured Exception: " + e, MicroWebSrv2.ERROR)
+    return json.dumps(data)
 
 if __name__ == "__main__":
-    print(wifi.ifconfig()[0])
+    
+    # 1. Mit WiFi verbinden
+    ip = connect_wifi()
+    if not ip:
+        print("Kritischer Fehler: Kein Netzwerk. Neustart in 10s...")
+        time.sleep(10)
+        machine.reset()
+
+    # 2. Socket Server vorbereiten
+    try:
+        # Socket erstellen
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        # Erlaubt den sofortigen Neustart des Ports, falls der Server crasht
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        # Binden an IP und Port
+        s.bind(('', SERVER_PORT))
+        s.listen(5) # Max 5 Wartende Verbindungen
+        print(f">>> Server bereit auf: http://{ip}/metrics")
+        print(">>> Drücke Strg+C zum Beenden.")
+        
+    except OSError as e:
+        print(f"Fehler beim Starten des Sockets: {e}")
+        machine.reset()
+
+    # 3. Endlosschleife für Anfragen
     while True:
         try:
-            while not wifi.isconnected():
-                mws2.Log("No WiFi-Connection!", MicroWebSrv2.WARNING)
-            #Measured Environment Parameters getting logged onto the ESP32 Web-Server
-            timestamp = (str(rtc.datetime()[0])+"."+str(rtc.datetime()[1])+"."+str(rtc.datetime()[2])+" "+str(rtc.datetime()[4])+":"+str(rtc.datetime()[5])+":"+str(rtc.datetime()[6]))
-            esp_freq = str(machine.freq() / 1000000) + " MHz"
-            esp_temp = str(round((esp32.raw_temperature()-32)/1.8, 1)) + " Celsius"
-            env_temp = ""
-            env_humi = ""
-            env_co2p = ""
-            env_brig = ""
+            # Auf Verbindung warten (blockiert, bis jemand anfragt)
+            conn, addr = s.accept()
             
-            #Dictionary, which represents a JSON
-            data = {
-                "TIMESTAMP": timestamp,
-                "ESP_FREQ": esp_freq,
-                "ESP_TEMP": esp_temp,
-                "ENV_TEMP": env_temp,
-                "ENV_HUMI": env_humi,
-                "ENV_CO2P": env_co2p,
-                "ENV_BRIG": env_brig
-            }
-            logs = mws2.Log(data, MicroWebSrv2.INFO)
-            time.sleep_ms(1000)
+            # Timeout setzen, falls Client nichts sendet
+            conn.settimeout(2.0)
+            
+            # Anfrage empfangen (wir lesen nur die ersten 1024 Bytes, das reicht für die URL)
+            request = conn.recv(1024)
+            request_str = str(request)
+            
+            # Routing
+            if "GET /metrics" in request_str:
+                # Metriken senden
+                json_data = create_metrics_json()
+                response = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Connection: close\r\n"
+                    "Access-Control-Allow-Origin: *\r\n" # Erlaubt Zugriff von anderen Webseiten
+                    "\r\n"
+                    + json_data
+                )
+                conn.send(response.encode())
+                # Optional: Kurzes Log
+                # print(f"Metriken gesendet an {addr[0]}")
+                
+            elif "GET /healthcheck" in request_str:
+                # Test-Seite
+                conn.send(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nHealthcheck OK")
+                
+            else:
+                # 404 Fehlerseite
+                conn.send(b"HTTP/1.1 404 Not Found\r\n\r\nNot Found")
+
+            # Verbindung sauber schließen
+            conn.close()
+
+        except OSError as e:
+            # Fehler (z.B. Timeout) abfangen, damit der Server nicht abstürzt
+            conn.close()
             
         except Exception as e:
-            mws2.Log("Timestamp: " + timestamp + ", Msg: Occured Exception: " + e, MicroWebSrv2.ERROR)
-else:
-    #Close WIFI-Connection and stop Web-Server
-    wifi.disconnect()
-    mws2.Stop()
+            print(f"Server-Fehler: {e}")
+            # Bei kritischen Fehlern kurz warten
+            time.sleep(1)
+
+
+
