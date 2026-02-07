@@ -41,7 +41,8 @@ def get_measurement(id: int):
 def create_measurement(measurement: Measurement) -> Measurement:
     log.info("Adding measurement to database: %s", measurement)
 
-    data = (measurement.timestamp, measurement.esp_freq, measurement.esp_temp, measurement.env_temp,measurement.env_humi,measurement.env_co2p,measurement.env_brig)
+    data = (measurement.timestamp, measurement.esp_freq, measurement.esp_temp, measurement.env_temp,
+            measurement.env_humi,measurement.env_co2p,measurement.env_brig)
     param = """INSERT INTO measurement
                (timestamp, esp_freq, esp_temp, env_temp, env_humi, env_co2p, env_brig)
             VALUES (?, ?, ?, ?, ?, ?, ?)"""
