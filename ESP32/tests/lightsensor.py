@@ -2,7 +2,7 @@ from machine import Pin, ADC, PWM
 from time import sleep
 
 # analog input pin
-ldr = ADC(Pin(34 , Pin.IN))
+ldr = ADC(Pin(27 , Pin.IN))
 ldr.atten(ADC.ATTN_11DB) # voltage range: 0.15-2.45 V
 
 while True:

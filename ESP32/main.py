@@ -4,8 +4,9 @@ import network
 import socket
 import time
 import json
-from machine import RTC, Pin, SoftI2C
+from machine import RTC, Pin, SoftI2C, ADC
 import ssd1306
+import dht
 
 # HIER MIT EIGENEM WLAN KONFIGURIEREN
 WIFI_SSID = "iPhone von A"
@@ -14,6 +15,13 @@ SERVER_PORT = 80
 
 # RTC initialisieren
 rtc = machine.RTC()
+
+# DHT11 Sensor auf Pin 33 (GPIO33) vorbereiten
+dht11 = dht.DHT11(Pin(33, Pin.IN))
+
+# LDR
+ldr = ADC(Pin(27 , Pin.IN))
+ldr.atten(ADC.ATTN_11DB) # voltage range: 0.15-2.45 V
 
 # OLED-Pins
 scl_pin = 25
@@ -90,22 +98,23 @@ def create_metrics_json():
     """Liest Sensoren und erstellt das JSON-Objekt."""
     timestamp = get_timestamp()
     esp_freq = machine.freq() / 1000000 # MHz
-    
-    try:
-        # Interne Temperatur (nicht auf allen ESP32 genau kalibriert)
-        esp_temp = round((esp32.raw_temperature() - 32) / 1.8, 1)
-    except:
-        esp_temp = 0.0
+    esp_temp = round((esp32.raw_temperature() - 32) / 1.8, 1)
+    dht11.measure() # DHT11 aktuelle Werte messen
+    temperature = dht11.temperature()
+    humidity = dht11.humidity()
+    brightness = ldr.read() # LDR Helligkeit messen (0-4095) - je höher, desto dunkler (abhängig von der Verschaltung)
 
+    time.sleep(1)
+    
     # Hier später echte Sensordaten einfügen
     data = {
         "TIMESTAMP": timestamp,
         "ESP_FREQ": esp_freq,
         "ESP_TEMP": esp_temp,
-        "ENV_TEMP": 0,
-        "ENV_HUMI": 0,
+        "ENV_TEMP": temperature,
+        "ENV_HUMI": humidity,
         "ENV_CO2P": 0,
-        "ENV_BRIG": 0
+        "ENV_BRIG": brightness
     }
     return data
 
@@ -189,6 +198,7 @@ if __name__ == "__main__":
             print(f"Server-Fehler: {e}")
             # Bei kritischen Fehlern kurz warten
             time.sleep(1)
+
 
 
 
