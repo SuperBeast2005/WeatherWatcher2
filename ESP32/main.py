@@ -4,8 +4,8 @@ import network
 import socket
 import time
 import json
-from machine import RTC, Pin, ADC
-import dht
+from machine import RTC, Pin, SoftI2C
+import ssd1306
 
 # HIER MIT EIGENEM WLAN KONFIGURIEREN
 WIFI_SSID = "iPhone von A"
@@ -14,6 +14,37 @@ SERVER_PORT = 80
 
 # RTC initialisieren
 rtc = machine.RTC()
+
+# OLED-Pins
+scl_pin = 25
+sda_pin = 26
+
+# initialize I2C bus (software mode)
+i2c = SoftI2C(scl = Pin(scl_pin), sda = Pin(sda_pin))
+
+# initialize oled display on standard address
+display_width = 128
+display_height = 64
+oled = ssd1306.SSD1306_I2C(display_width, display_height, i2c)
+
+def oled_metrics(metrics: dict):
+    """Zeigt die wichtigsten Metriken auf dem OLED an."""
+    oled.fill(0) # Bildschirm löschen
+    oled.text("ESPFreq:{}MHz".format(metrics["ESP_FREQ"]), 0, 0)
+    oled.text("ESPTemp:{}C".format(metrics["ESP_TEMP"]), 0, 10)
+    oled.text("Temp:   {}C".format(metrics["ENV_TEMP"]), 0, 20)
+    oled.text("Humi:   {}%".format(metrics["ENV_HUMI"]), 0, 30)
+    oled.text("CO2:    {}%".format(metrics["ENV_CO2P"]), 0, 40)
+    oled.text("Brig:   {}Lux".format(metrics["ENV_CO2P"]), 0, 50)
+    oled.show()
+
+def oled_curl(metrics: dict):
+    oled.fill(0) # Bildschirm löschen
+    oled.text("{}".format(metrics["TIMESTAMP"][11:19]), 0, 0)
+    oled.text("GET /metrics", 0, 10)
+    oled.text("erfolgreich!", 0, 20)
+    oled.show()
+    time.sleep(5)
 
 def get_timestamp():
     """Erstellt einen formatierten Zeitstempel."""
@@ -57,42 +88,26 @@ def connect_wifi():
 
 def create_metrics_json():
     """Liest Sensoren und erstellt das JSON-Objekt."""
-
+    timestamp = get_timestamp()
+    esp_freq = machine.freq() / 1000000 # MHz
+    
     try:
-        #Temperature- and Humidity-Sensor
-        dht11 = dht.DHT11(Pin(33, Pin.IN))
-        sensor = dht11.measure()
-        
-        #Lightsensor
-        ldr = AADC(Pin(34, Pin.IN))
-        ldr.atten(ADC.ATTN_11DB)
-                
-        #Measured Data
-        timestamp = get_timestamp()
-        esp_freq = machine.freq() / 1000000 # MHz
+        # Interne Temperatur (nicht auf allen ESP32 genau kalibriert)
         esp_temp = round((esp32.raw_temperature() - 32) / 1.8, 1)
-        env_temp = sensor.temperature()
-        env_humi = sensor.humidity()
-        env_brig = ldr.read()
-        
-        # Sekunde warten zur Sicherheit
-        time.sleep(1)
-        
-    except Exception as e:
+    except:
         esp_temp = 0.0
-        print("FEHLER: " + e)
 
     # Hier später echte Sensordaten einfügen
     data = {
         "TIMESTAMP": timestamp,
         "ESP_FREQ": esp_freq,
         "ESP_TEMP": esp_temp,
-        "ENV_TEMP": env_temp,
-        "ENV_HUMI": env_humi,
+        "ENV_TEMP": 0,
+        "ENV_HUMI": 0,
         "ENV_CO2P": 0,
-        "ENV_BRIG": env_brig
+        "ENV_BRIG": 0
     }
-    return json.dumps(data)
+    return data
 
 if __name__ == "__main__":
     
@@ -124,6 +139,9 @@ if __name__ == "__main__":
     # 3. Endlosschleife für Anfragen
     while True:
         try:
+            #Display mit Metriken starten
+            oled_metrics(create_metrics_json())
+            
             # Auf Verbindung warten (blockiert, bis jemand anfragt)
             conn, addr = s.accept()
             
@@ -136,8 +154,10 @@ if __name__ == "__main__":
             
             # Routing
             if "GET /metrics" in request_str:
+                raw_data = create_metrics_json()
+                oled_curl(raw_data) #Anfrage aufm OLED-Display Loggen
                 # Metriken senden
-                json_data = create_metrics_json()
+                json_data = json.dumps(raw_data)
                 response = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
