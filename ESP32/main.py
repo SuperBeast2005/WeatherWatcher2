@@ -9,8 +9,8 @@ import ssd1306
 import dht
 
 # HIER MIT EIGENEM WLAN KONFIGURIEREN
-WIFI_SSID = "iPhone von A"
-WIFI_PWD  = "wehweh123"
+WIFI_SSID = "esp32_wlan"
+WIFI_PWD = "wlanesp32"
 SERVER_PORT = 80
 
 # RTC initialisieren
