@@ -10,7 +10,7 @@ from machine import RTC, Pin, SoftI2C, ADC
 import ssd1306
 import dht
 
-# --- KONFIGURATION ---
+# --- WLAN-KONFIGURATION ---
 WIFI_SSID = "esp32_wlan"
 WIFI_PWD = "wlanesp32"
 SERVER_PORT = 80
@@ -22,8 +22,9 @@ rtc = machine.RTC()
 dht11 = dht.DHT11(Pin(33, Pin.IN))
 
 # LDR
-ldr = ADC(Pin(27, Pin.IN))
-ldr.atten(3)
+ldr = ADC(Pin(34, Pin.IN))
+ldr.width(ADC.WIDTH_12BIT)
+ldr.atten(ADC.ATTN_11DB)
 
 # OLED-Pins
 scl_pin = 25
@@ -40,11 +41,11 @@ def get_timestamp():
 def oled_metrics(metrics: dict):
     oled.fill(0)
     oled.text("ESPFreq:{}MHz".format(metrics["ESP_FREQ"]), 0, 0)
-    oled.text("ESPTemp:{}°C".format(metrics["ESP_TEMP"]), 0, 10)
-    oled.text("Temp:   {}°C".format(metrics["ENV_TEMP"]), 0, 20)
+    oled.text("ESPTemp:{} C".format(metrics["ESP_TEMP"]), 0, 10)
+    oled.text("Temp:   {} C".format(metrics["ENV_TEMP"]), 0, 20)
     oled.text("Humi:   {}%".format(metrics["ENV_HUMI"]), 0, 30)
     oled.text("CO2:    {}%".format(metrics["ENV_CO2P"]), 0, 40)
-    oled.text("Brig:   {}Lux".format(metrics["ENV_BRIG"]), 0, 50) # Fix: Corrected key
+    oled.text("Brig:   {}lx".format(metrics["ENV_BRIG"]), 0, 50) # Fix: Corrected key
     oled.show()
 
 async def oled_curl_async(metrics: dict):
@@ -163,3 +164,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Server gestoppt.")
+
