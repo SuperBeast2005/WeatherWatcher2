@@ -9,31 +9,31 @@ import gc
 from machine import RTC, Pin, SoftI2C, ADC
 import ssd1306
 import dht
+import math
 
 # --- WLAN-KONFIGURATION ---
 WIFI_SSID = "esp32_wlan"
 WIFI_PWD = "wlanesp32"
 SERVER_PORT = 80
 
-# RTC initialisieren
+# --- RTC initialisieren ---
 rtc = machine.RTC()
 
 # DHT11 Sensor auf Pin 33
 dht11 = dht.DHT11(Pin(33, Pin.IN))
 
-# LDR
+# --- LDR ---
 ldr = ADC(Pin(34, Pin.IN))
 ldr.width(ADC.WIDTH_12BIT)
 ldr.atten(ADC.ATTN_11DB)
 
-# OLED-Pins
+# --- OLED-Pins ---
 scl_pin = 25
 sda_pin = 26
 i2c = SoftI2C(scl=Pin(scl_pin), sda=Pin(sda_pin))
 oled = ssd1306.SSD1306_I2C(128, 64, i2c)
 
 # --- HILFSFUNKTIONEN ---
-
 def get_timestamp():
     t = rtc.datetime()
     return "{:04d}.{:02d}.{:02d} {:02d}:{:02d}:{:02d}".format(t[0], t[1], t[2], t[4], t[5], t[6])
@@ -44,18 +44,34 @@ def oled_metrics(metrics: dict):
     oled.text("ESPTemp:{} C".format(metrics["ESP_TEMP"]), 0, 10)
     oled.text("Temp:   {} C".format(metrics["ENV_TEMP"]), 0, 20)
     oled.text("Humi:   {}%".format(metrics["ENV_HUMI"]), 0, 30)
-    oled.text("CO2:    {}%".format(metrics["ENV_CO2P"]), 0, 40)
+    oled.text("eCO2:   {}%".format(metrics["ENV_CO2P"]), 0, 40)
     oled.text("Brig:   {}lx".format(metrics["ENV_BRIG"]), 0, 50) # Fix: Corrected key
     oled.show()
 
-async def oled_curl_async(metrics: dict):
-    """Zeigt kurzzeitig den Log-Eintrag an, ohne den Server zu blockieren."""
-    oled.fill(0)
-    oled.text("{}".format(metrics["TIMESTAMP"][11:19]), 0, 0)
-    oled.text("GET /metrics", 0, 10)
-    oled.text("erfolgreich!", 0, 20)
-    oled.show()
-    await asyncio.sleep(3) # Nicht-blockierendes Warten
+def read_lux(adc_value):
+    # 1. Konstanten definieren
+    GAMMA = 0.7          # Steilheit der Kennlinie
+    RL10 = 50            # Widerstand bei 10 Lux in kOhm (typisch für GL5528)
+    R_FIXED = 10         # Dein Festwiderstand in kOhm (10k)
+    V_REF = 3.3          # Referenzspannung
+    ADC_RES = 4095       # 12-Bit Auflösung
+
+    # 2. Fehler vermeiden (Division durch Null)
+    if adc_value <= 0: return 0
+    if adc_value >= ADC_RES: adc_value = ADC_RES - 1
+
+    # 3. Spannung berechnen
+    voltage = adc_value / ADC_RES * V_REF
+    
+    # 4. Widerstand des LDR berechnen (Spannungsteiler-Formel umgestellt)
+    # Formel: R_LDR = R_FIXED * (V_REF / V_OUT - 1)
+    resistance = R_FIXED * (V_REF / voltage - 1)
+
+    # 5. Lux berechnen
+    # Formel umgestellt: Lux = 10 * (RL10 / resistance)^(1/GAMMA)
+    lux = math.pow(RL10 / resistance, 1 / GAMMA) * 10
+    
+    return round(lux, 1)
 
 def create_metrics_json():
     try:
@@ -71,11 +87,12 @@ def create_metrics_json():
         "ESP_TEMP": round((esp32.raw_temperature() - 32) / 1.8, 1),
         "ENV_TEMP": temp,
         "ENV_HUMI": humi,
-        "ENV_CO2P": 0,
-        "ENV_BRIG": ldr.read()
+        "ENV_CO2P": 0, #(eco2 // 10000), # Platzhalter, da kein Sensor vorhanden 
+        "ENV_BRIG": read_lux(ldr.read())
     }
 
 def connect_wifi():
+    """WLAN-Verbindung herstellen und IP zurückgeben."""
     print(">>> Starte WiFi Verbindung...")
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
@@ -96,8 +113,16 @@ def connect_wifi():
         return ip
     return None
 
-# --- ASYNC TASKS ---
-
+# --- ASYNC FUNKTIONEN ---
+async def oled_curl_async(metrics: dict):
+    """Zeigt kurzzeitig den Log-Eintrag an, ohne den Server zu blockieren."""
+    oled.fill(0)
+    oled.text("{}".format(metrics["TIMESTAMP"][11:19]), 0, 0)
+    oled.text("GET /metrics", 0, 10)
+    oled.text("erfolgreich!", 0, 20)
+    oled.show()
+    await asyncio.sleep(3) # Nicht-blockierendes Warten
+    
 async def handle_client(reader, writer):
     """Verarbeitet HTTP Anfragen asynchron."""
     try:
@@ -158,7 +183,7 @@ async def main():
     # Aufgaben parallel ausführen
     await asyncio.gather(server, display_updater())
 
-# --- START ---
+# --- AUSFÜHREN ---
 if __name__ == "__main__":
     try:
         asyncio.run(main())
