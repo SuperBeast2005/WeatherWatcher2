@@ -1,6 +1,5 @@
 from machine import Pin, SoftI2C
 import ssd1306
-import sht3x
 from time import sleep
 
 scl_pin = 25
