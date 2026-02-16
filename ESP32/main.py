@@ -10,6 +10,8 @@ from machine import RTC, Pin, SoftI2C, ADC
 import ssd1306
 import dht
 import math
+import ubinascii
+from ccs811 import CCS811
 
 # --- WLAN-KONFIGURATION ---
 WIFI_SSID = "esp32_wlan"
@@ -19,7 +21,7 @@ SERVER_PORT = 80
 # --- RTC initialisieren ---
 rtc = machine.RTC()
 
-# DHT11 Sensor auf Pin 33
+# --- DHT11-Sensor ---
 dht11 = dht.DHT11(Pin(33, Pin.IN))
 
 # --- LDR ---
@@ -27,11 +29,16 @@ ldr = ADC(Pin(34, Pin.IN))
 ldr.width(ADC.WIDTH_12BIT)
 ldr.atten(ADC.ATTN_11DB)
 
-# --- OLED-Pins ---
+# --- I2C-Bus ---
 scl_pin = 25
 sda_pin = 26
 i2c = SoftI2C(scl=Pin(scl_pin), sda=Pin(sda_pin))
+
+# --- OLED-Display ---
 oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+
+# --- CCS811-Sensor ---
+sensor = CCS811(i2c)
 
 # --- HILFSFUNKTIONEN ---
 def get_timestamp():
@@ -41,10 +48,10 @@ def get_timestamp():
 def oled_metrics(metrics: dict):
     oled.fill(0)
     oled.text("ESPFreq:{}MHz".format(metrics["ESP_FREQ"]), 0, 0)
-    oled.text("ESPTemp:{} C".format(metrics["ESP_TEMP"]), 0, 10)
-    oled.text("Temp:   {} C".format(metrics["ENV_TEMP"]), 0, 20)
+    oled.text("ESPTemp:{}C".format(metrics["ESP_TEMP"]), 0, 10)
+    oled.text("Temp:   {}C".format(metrics["ENV_TEMP"]), 0, 20)
     oled.text("Humi:   {}%".format(metrics["ENV_HUMI"]), 0, 30)
-    oled.text("eCO2:   {}%".format(metrics["ENV_CO2P"]), 0, 40)
+    oled.text("eCO2:   {}ppm".format(metrics["ENV_CO2P"]), 0, 40)
     oled.text("Brig:   {}lx".format(metrics["ENV_BRIG"]), 0, 50) # Fix: Corrected key
     oled.show()
 
@@ -74,12 +81,13 @@ def create_metrics_json():
         temp = dht11.temperature()
         humi = dht11.humidity()
         brig = ldr.read()
-        eco2 = 0 # ccs811_co2_data // 10000 -> ppm to %
+        eco2, tvoc = sensor.read_data()
     except:
         temp, humi, brig, eco2 = 0, 0, 0, 0
 
     return {
         "TIMESTAMP": get_timestamp(),
+        "ESP_HWID": ubinascii.hexlify(machine.unique_id()).decode(),
         "ESP_FREQ": machine.freq() // 1000000,
         "ESP_TEMP": round((esp32.raw_temperature() - 32) / 1.8, 1),
         "ENV_TEMP": temp,
@@ -186,5 +194,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Server gestoppt.")
+
 
 
