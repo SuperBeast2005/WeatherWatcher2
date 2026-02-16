@@ -6,6 +6,7 @@ import time
 import json
 import uasyncio as asyncio
 import gc
+import urequests as requests  # Erforderlich für Cloud-Upload
 from machine import RTC, Pin, SoftI2C, ADC
 import ssd1306
 import dht
@@ -13,66 +14,58 @@ import math
 import ubinascii
 from ccs811 import CCS811
 
-# --- WLAN-KONFIGURATION ---
+# --- KONFIGURATION ---
 WIFI_SSID = "esp32_wlan"
 WIFI_PWD = "wlanesp32"
 SERVER_PORT = 80
 
+# DWEET.IO KONFIGURATION
+# Einzigartiger Name für den Zugriff: dweet.io/follow/ESP32_Sensor_XXXX
+UNIQUE_ID = ubinascii.hexlify(machine.unique_id()).decode()
+THING_NAME = "ESP32_Environment_{}".format(UNIQUE_ID[:6])
+
 # --- RTC initialisieren ---
 rtc = machine.RTC()
 
-# --- DHT11-Sensor ---
+# --- SENSOREN SETUP ---
 dht11 = dht.DHT11(Pin(33, Pin.IN))
-
-# --- LDR ---
 ldr = ADC(Pin(34, Pin.IN))
 ldr.width(ADC.WIDTH_12BIT)
 ldr.atten(ADC.ATTN_11DB)
 
-# --- I2C-Bus ---
+# I2C & Display
 scl_pin = 25
 sda_pin = 26
 i2c = SoftI2C(scl=Pin(scl_pin), sda=Pin(sda_pin))
-
-# --- OLED-Display ---
 oled = ssd1306.SSD1306_I2C(128, 64, i2c)
 
-# --- CCS811-Sensor ---
-sensor = CCS811(i2c)
+# CCS811 (CO2)
+try:
+    sensor = CCS811(i2c)
+except Exception as e:
+    print("CCS811 nicht gefunden:", e)
+    sensor = None
 
 # --- HILFSFUNKTIONEN ---
+def urlencode(params):
+    parts = []
+    for k, v in params.items():
+        # Ersetze Leerzeichen durch %20 für die URL-Konformität
+        val = str(v).replace(" ", "%20").replace(":", "%3A")
+        parts.append("{}={}".format(k, val))
+    return "?" + "&".join(parts)
+
 def get_timestamp():
     t = rtc.datetime()
     return "{:04d}.{:02d}.{:02d} {:02d}:{:02d}:{:02d}".format(t[0], t[1], t[2], t[4], t[5], t[6])
 
-def oled_metrics(metrics: dict):
-    oled.fill(0)
-    oled.text("ESPFreq:{}MHz".format(metrics["ESP_FREQ"]), 0, 0)
-    oled.text("ESPTemp:{}C".format(metrics["ESP_TEMP"]), 0, 10)
-    oled.text("Temp:   {}C".format(metrics["ENV_TEMP"]), 0, 20)
-    oled.text("Humi:   {}%".format(metrics["ENV_HUMI"]), 0, 30)
-    oled.text("eCO2:   {}ppm".format(metrics["ENV_CO2P"]), 0, 40)
-    oled.text("Brig:   {}lx".format(metrics["ENV_BRIG"]), 0, 50) # Fix: Corrected key
-    oled.show()
-
 def read_lux(adc_value):
-    # 1. Konstanten definieren
-    GAMMA = 0.7          # Steilheit der Kennlinie
-    RL10 = 50            # Widerstand bei 10 Lux in kOhm
-    R_FIXED = 10         # Festwiderstand in kOhm (10k)
-    V_REF = 3.3          # Referenzspannung
-    ADC_RES = 4095       # 12-Bit Auflösung
-
-    # 2. Fehler vermeiden (Division durch Null)
+    GAMMA, RL10, R_FIXED, V_REF, ADC_RES = 0.7, 50, 10, 3.3, 4095
     if adc_value <= 0: return 0
     if adc_value >= ADC_RES: adc_value = ADC_RES - 1
-    
-    voltage = adc_value / ADC_RES * V_REF # 3. Spannung berechnen
-    
-    resistance = R_FIXED * (V_REF / voltage - 1) # 4. Widerstand des LDR berechnen
-    
-    lux = math.pow(RL10 / resistance, 1 / GAMMA) * 10 # 5. Lux berechnen
-    
+    voltage = adc_value / ADC_RES * V_REF
+    resistance = R_FIXED * (V_REF / voltage - 1)
+    lux = math.pow(RL10 / resistance, 1 / GAMMA) * 10
     return round(lux, 1)
 
 def create_metrics_json():
@@ -81,13 +74,15 @@ def create_metrics_json():
         temp = dht11.temperature()
         humi = dht11.humidity()
         brig = ldr.read()
-        eco2, tvoc = sensor.read_data()
+        eco2 = 0
+        if sensor:
+            eco2, _ = sensor.read_data()
     except:
         temp, humi, brig, eco2 = 0, 0, 0, 0
 
     return {
         "TIMESTAMP": get_timestamp(),
-        "ESP_HWID": ubinascii.hexlify(machine.unique_id()).decode(),
+        "ESP_HWID": UNIQUE_ID,
         "ESP_FREQ": machine.freq() // 1000000,
         "ESP_TEMP": round((esp32.raw_temperature() - 32) / 1.8, 1),
         "ENV_TEMP": temp,
@@ -96,80 +91,84 @@ def create_metrics_json():
         "ENV_BRIG": read_lux(brig)
     }
 
+def oled_metrics(metrics: dict):
+    oled.fill(0)
+    oled.text("Cloud: {}".format(THING_NAME[-6:]), 0, 0) # Zeigt Teil der ID
+    oled.text("Temp:   {}C".format(metrics["ENV_TEMP"]), 0, 15)
+    oled.text("Humi:   {}%".format(metrics["ENV_HUMI"]), 0, 25)
+    oled.text("eCO2:   {}ppm".format(metrics["ENV_CO2P"]), 0, 35)
+    oled.text("Lux:    {}".format(metrics["ENV_BRIG"]), 0, 45)
+    oled.show()
+
 def connect_wifi():
-    """WLAN-Verbindung herstellen und IP zurückgeben."""
-    print(">>> Starte WiFi Verbindung...")
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
-    try:
-        wlan.config(pm=0)
-    except:
-        pass
-    
     if not wlan.isconnected():
+        print("Verbinde mit WiFi...")
         wlan.connect(WIFI_SSID, WIFI_PWD)
         for _ in range(15):
             if wlan.isconnected(): break
             time.sleep(1)
     
     if wlan.isconnected():
+        # --- DNS MANUELL SETZEN ---
+        # (IP, Subnetzmaske, Gateway, DNS-Server)
+        #config = list(wlan.ifconfig())
+        #config[3] = '8.8.8.8' # Setzt DNS auf Google
+        #wlan.ifconfig(tuple(config))
+        # --------------------------
+        
         ip = wlan.ifconfig()[0]
-        print(f"VERBUNDEN! IP: {ip}")
+        print(f"Verbunden! IP: {ip}, DNS: {wlan.ifconfig()[3]}")
         return ip
     return None
 
-# --- ASYNC FUNKTIONEN ---
-async def oled_curl_async(metrics: dict):
-    """Zeigt kurzzeitig den Log-Eintrag an, ohne den Server zu blockieren."""
-    oled.fill(0)
-    oled.text("{}".format(metrics["TIMESTAMP"][11:19]), 0, 0)
-    oled.text("GET /metrics", 0, 10)
-    oled.text("erfolgreich!", 0, 20)
-    oled.show()
-    await asyncio.sleep(3) # Nicht-blockierendes Warten
+# --- ASYNC TASKS ---
+
+async def dweet_publisher():
+    """Sendet die Sensordaten alle 30 Sekunden an dweet.io."""
+    url = "http://dweet.me:3333/publish/yoink/for/{}".format(THING_NAME)
+    print(f">>> Cloud-Sync: {url}")
     
+    while True:
+        gc.collect()
+        try:
+            data = create_metrics_json()
+            params = urlencode(data)
+            param_url = url + params
+            # Timeout kurz halten, damit der Loop nicht hakt
+            res = requests.post(param_url) #, timeout=5
+            res.close() # Speicher freigeben
+            print(">>> Dweet.me Update gesendet")
+        except Exception as e:
+            print("Dweet.me Fehler:", e)
+        
+        await asyncio.sleep(30) # Upload-Intervall
+
 async def handle_client(reader, writer):
-    """Verarbeitet HTTP Anfragen asynchron."""
+    """Verarbeitet lokale HTTP Anfragen (z.B. für Monitoring im selben WLAN)."""
     try:
         request_line = await reader.readline()
-        # Header konsumieren
-        while await reader.readline() != b"\r\n":
-            pass
-
-        request = request_line.decode().strip()
+        while await reader.readline() != b"\r\n": pass
         
+        request = request_line.decode().strip()
         if "GET /metrics" in request:
             data = create_metrics_json()
-            # Starte den Display-Log im Hintergrund
-            asyncio.create_task(oled_curl_async(data))
-            
-            json_data = json.dumps(data)
-            response = (
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: application/json\r\n"
-                "Access-Control-Allow-Origin: *\r\n"
-                "Connection: close\r\n\r\n"
-                + json_data
-            )
+            response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + json.dumps(data)
             writer.write(response.encode())
-            
-        elif "GET /healthcheck" in request:
-            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nOK")
         else:
-            writer.write(b"HTTP/1.1 404 Not Found\r\n\r\nNot Found")
-
+            writer.write(b"HTTP/1.1 404 Not Found\r\n\r\n")
+        
         await writer.drain()
         await writer.wait_closed()
     except Exception as e:
-        print(f"Request Error: {e}")
+        print("Server Fehler:", e)
     finally:
         gc.collect()
 
 async def display_updater():
-    """Aktualisiert das Display alle 2 Sekunden, sofern kein Log aktiv ist."""
+    """Aktualisiert das OLED alle 2 Sekunden."""
     while True:
-        # Nur Metriken zeigen, wenn keine curl-Meldung das Display blockiert
-        # (Da create_task für oled_curl_async genutzt wird, überschreiben wir hier einfach)
         data = create_metrics_json()
         oled_metrics(data)
         await asyncio.sleep(2)
@@ -177,23 +176,26 @@ async def display_updater():
 async def main():
     ip = connect_wifi()
     if not ip:
-        print("Kritischer Fehler: Kein Netzwerk. Neustart...")
+        print("Kein WiFi. Neustart in 10s...")
         await asyncio.sleep(10)
         machine.reset()
 
-    # Server starten
-    print(f">>> Server läuft auf http://{ip}/metrics")
+    # Lokaler Server & Cloud Tasks
     server = asyncio.start_server(handle_client, "0.0.0.0", SERVER_PORT)
     
-    # Aufgaben parallel ausführen
-    await asyncio.gather(server, display_updater())
+    print("-" * 30)
+    print(f"LOKAL:  http://{ip}/metrics")
+    print(f"REMOTE: http://dweet.me:3333/publish/yoink/for/{THING_NAME}")
+    print("-" * 30)
 
-# --- AUSFÜHREN ---
+    await asyncio.gather(
+        server, 
+        display_updater(),
+        dweet_publisher()
+    )
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Server gestoppt.")
-
-
-
+        print("Beendet.")
