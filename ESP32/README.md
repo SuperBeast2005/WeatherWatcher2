@@ -12,7 +12,7 @@ ESP32 web server equipped with sensors, featuring a GET endpoint to extract sens
 
 Follow this Tutorial: https://randomnerdtutorials.com/getting-started-thonny-micropython-python-ide-esp32-esp8266/ 
 
-### 3. save main.py and libs onto the ESP32
+### 3. Save main.py and libs onto the ESP32
 
 1. Connect the ESP32 to your computer via USB
 2. Open Thonny (or a similar IDE), the ESP32 should be automatically detected after flashing and will attempt to execute main.py (nothing will happen if main.py is empty).
