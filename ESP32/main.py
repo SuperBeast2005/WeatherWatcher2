@@ -19,8 +19,7 @@ WIFI_SSID = "esp32_wlan"
 WIFI_PWD = "wlanesp32"
 SERVER_PORT = 80
 
-# DWEET.IO KONFIGURATION
-# Einzigartiger Name für den Zugriff: dweet.io/follow/ESP32_Sensor_XXXX
+# DWEET.ME KONFIGURATION
 UNIQUE_ID = ubinascii.hexlify(machine.unique_id()).decode()
 THING_NAME = "ESP32_Environment_{}".format(UNIQUE_ID[:6])
 
@@ -94,10 +93,10 @@ def create_metrics_json():
 def oled_metrics(metrics: dict):
     oled.fill(0)
     oled.text("Cloud: {}".format(THING_NAME[-6:]), 0, 0) # Zeigt Teil der ID
-    oled.text("Temp:   {}C".format(metrics["ENV_TEMP"]), 0, 15)
-    oled.text("Humi:   {}%".format(metrics["ENV_HUMI"]), 0, 25)
-    oled.text("eCO2:   {}ppm".format(metrics["ENV_CO2P"]), 0, 35)
-    oled.text("Lux:    {}".format(metrics["ENV_BRIG"]), 0, 45)
+    oled.text("Temp:  {}C".format(metrics["ENV_TEMP"]), 0, 10)
+    oled.text("Humi:  {}%".format(metrics["ENV_HUMI"]), 0, 20)
+    oled.text("eCO2:  {}ppm".format(metrics["ENV_CO2P"]), 0, 30)
+    oled.text("Brig:  {}lx".format(metrics["ENV_BRIG"]), 0, 40)
     oled.show()
 
 def connect_wifi():
@@ -111,39 +110,43 @@ def connect_wifi():
             time.sleep(1)
     
     if wlan.isconnected():
-        # --- DNS MANUELL SETZEN ---
-        # (IP, Subnetzmaske, Gateway, DNS-Server)
-        #config = list(wlan.ifconfig())
-        #config[3] = '8.8.8.8' # Setzt DNS auf Google
-        #wlan.ifconfig(tuple(config))
-        # --------------------------
-        
         ip = wlan.ifconfig()[0]
         print(f"Verbunden! IP: {ip}, DNS: {wlan.ifconfig()[3]}")
         return ip
     return None
 
 # --- ASYNC TASKS ---
-
 async def dweet_publisher():
-    """Sendet die Sensordaten alle 30 Sekunden an dweet.io."""
-    url = "http://dweet.me:3333/publish/yoink/for/{}".format(THING_NAME)
-    print(f">>> Cloud-Sync: {url}")
+    """Sendet die Sensordaten per GET-Request an die URL-Parameter."""
+    # Basis-URL
+    base_url = "http://dweet.me:3333/publish/yoink/for/{}".format(THING_NAME)
     
     while True:
         gc.collect()
         try:
+            # 1. Daten generieren
             data = create_metrics_json()
+            
+            # 2. Daten in URL-Parameter umwandeln (?temp=20&humi=50...)
             params = urlencode(data)
-            param_url = url + params
-            # Timeout kurz halten, damit der Loop nicht hakt
-            res = requests.post(param_url) #, timeout=5
-            res.close() # Speicher freigeben
-            print(">>> Dweet.me Update gesendet")
+            full_url = base_url + params
+            
+            print(f">>> Sende an: {full_url}")
+            
+            # 3. WICHTIG: Nutze .get() statt .post()
+            res = requests.get(full_url)
+            
+            # Debugging
+            print(f">>> Status: {res.status_code}")
+            print(f">>> Server Antwort: {res.text}")
+            
+            res.close()
+            print(">>> Daten erfolgreich übertragen!")
+            
         except Exception as e:
             print("Dweet.me Fehler:", e)
         
-        await asyncio.sleep(30) # Upload-Intervall
+        await asyncio.sleep(10)
 
 async def handle_client(reader, writer):
     """Verarbeitet lokale HTTP Anfragen (z.B. für Monitoring im selben WLAN)."""
