@@ -13,6 +13,7 @@ import dht
 import math
 import ubinascii
 from ccs811 import CCS811
+import ntptime
 
 # --- KONFIGURATION ---
 WIFI_SSID = "esp32_wlan"
@@ -21,7 +22,7 @@ SERVER_PORT = 80
 
 # DWEET.ME KONFIGURATION
 UNIQUE_ID = ubinascii.hexlify(machine.unique_id()).decode()
-THING_NAME = "ESP32_Environment_{}".format(UNIQUE_ID[:6])
+THING_NAME = "ESP32_Environment_{}".format(UNIQUE_ID[:12])
 
 # --- RTC initialisieren ---
 rtc = machine.RTC()
@@ -56,7 +57,7 @@ def urlencode(params):
 
 def get_timestamp():
     t = rtc.datetime()
-    return "{:04d}.{:02d}.{:02d} {:02d}:{:02d}:{:02d}".format(t[0], t[1], t[2], t[4], t[5], t[6])
+    return "{:04d}.{:02d}.{:02d} {:02d}:{:02d}:{:02d}".format(t[0], t[1], t[2], t[4] + 1, t[5], t[6])
 
 def read_lux(adc_value):
     GAMMA, RL10, R_FIXED, V_REF, ADC_RES = 0.7, 50, 10, 3.3, 4095
@@ -92,7 +93,7 @@ def create_metrics_json():
 
 def oled_metrics(metrics: dict):
     oled.fill(0)
-    oled.text("Cloud: {}".format(THING_NAME[-6:]), 0, 0) # Zeigt Teil der ID
+    oled.text("Cloud: {}".format(THING_NAME[-12:]), 0, 0) # Zeigt Teil der ID
     oled.text("Temp:  {}C".format(metrics["ENV_TEMP"]), 0, 10)
     oled.text("Humi:  {}%".format(metrics["ENV_HUMI"]), 0, 20)
     oled.text("eCO2:  {}ppm".format(metrics["ENV_CO2P"]), 0, 30)
@@ -182,7 +183,9 @@ async def main():
         print("Kein WiFi. Neustart in 10s...")
         await asyncio.sleep(10)
         machine.reset()
-
+    
+    ntptime.settime()
+    
     # Lokaler Server & Cloud Tasks
     server = asyncio.start_server(handle_client, "0.0.0.0", SERVER_PORT)
     
