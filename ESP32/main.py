@@ -4,171 +4,204 @@ import network
 import socket
 import time
 import json
-from machine import RTC, Pin, ADC
+import uasyncio as asyncio
+import gc
+import urequests as requests  # Erforderlich für Cloud-Upload
+from machine import RTC, Pin, SoftI2C, ADC
+import ssd1306
 import dht
+import math
+import ubinascii
+from ccs811 import CCS811
+import ntptime
 
-# HIER MIT EIGENEM WLAN KONFIGURIEREN
-WIFI_SSID = "iPhone von A"
-WIFI_PWD  = "wehweh123"
+# --- KONFIGURATION ---
+WIFI_SSID = "esp32_wlan"
+WIFI_PWD = "wlanesp32"
 SERVER_PORT = 80
 
-# RTC initialisieren
+# DWEET.ME KONFIGURATION
+UNIQUE_ID = ubinascii.hexlify(machine.unique_id()).decode()
+THING_NAME = "ESP32_Environment_{}".format(UNIQUE_ID[:12])
+
+# --- RTC initialisieren ---
 rtc = machine.RTC()
 
+# --- SENSOREN SETUP ---
+dht11 = dht.DHT11(Pin(33, Pin.IN))
+ldr = ADC(Pin(34, Pin.IN))
+ldr.width(ADC.WIDTH_12BIT)
+ldr.atten(ADC.ATTN_11DB)
+
+# I2C & Display
+scl_pin = 25
+sda_pin = 26
+i2c = SoftI2C(scl=Pin(scl_pin), sda=Pin(sda_pin))
+oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+
+# CCS811 (CO2)
+try:
+    sensor = CCS811(i2c)
+except Exception as e:
+    print("CCS811 nicht gefunden:", e)
+    sensor = None
+
+# --- HILFSFUNKTIONEN ---
+def urlencode(params):
+    parts = []
+    for k, v in params.items():
+        # Ersetze Leerzeichen durch %20 für die URL-Konformität
+        val = str(v).replace(" ", "%20").replace(":", "%3A")
+        parts.append("{}={}".format(k, val))
+    return "?" + "&".join(parts)
+
 def get_timestamp():
-    """Erstellt einen formatierten Zeitstempel."""
     t = rtc.datetime()
-    # Format: YYYY.MM.DD HH:MM:SS
-    return "{:04d}.{:02d}.{:02d} {:02d}:{:02d}:{:02d}".format(t[0], t[1], t[2], t[4], t[5], t[6])
+    return "{:04d}.{:02d}.{:02d} {:02d}:{:02d}:{:02d}".format(t[0], t[1], t[2], t[4] + 1, t[5], t[6])
 
-def connect_wifi():
-    """Verbindet mit WiFi und deaktiviert den Energiesparmodus."""
-    print(">>> Starte WiFi Verbindung...")
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-
-    try:
-        wlan.config(pm=0)
-        print(">> WLAN-Power-Management deaktiviert (pm=0) -> Maximale Leistung.")
-    except Exception as e:
-        print(f">> Warnung beim Setzen von pm=0: {e}")     # Deaktiviert den WiFi-Energiesparmodus (pm=0), verhindert hohe Latenzen und Timeouts.
-
-    wlan.config(dhcp_hostname="ESP32-Sensor")
-    
-    if not wlan.isconnected():
-        print(f"Verbinde mit {WIFI_SSID}...")
-        wlan.connect(WIFI_SSID, WIFI_PWD)
-
-        # Warten mit Timeout (max 15 sek)
-        for i in range(15):
-            if wlan.isconnected():
-                break
-            time.sleep(1)
-            print(".", end="")
-        print("")
-
-    if wlan.isconnected():
-        ip = wlan.ifconfig()[0]
-        print(f"VERBUNDEN! IP: {ip}")
-        return ip
-    else:
-        print("FEHLER: Keine WLAN-Verbindung möglich.")
-        return None
+def read_lux(adc_value):
+    GAMMA, RL10, R_FIXED, V_REF, ADC_RES = 0.7, 50, 10, 3.3, 4095
+    if adc_value <= 0: return 0
+    if adc_value >= ADC_RES: adc_value = ADC_RES - 1
+    voltage = adc_value / ADC_RES * V_REF
+    resistance = R_FIXED * (V_REF / voltage - 1)
+    lux = math.pow(RL10 / resistance, 1 / GAMMA) * 10
+    return round(lux, 1)
 
 def create_metrics_json():
-    """Liest Sensoren und erstellt das JSON-Objekt."""
-
     try:
-        #Temperature- and Humidity-Sensor
-        dht11 = dht.DHT11(Pin(33, Pin.IN))
-        sensor = dht11.measure()
-        
-        #Lightsensor
-        ldr = AADC(Pin(34, Pin.IN))
-        ldr.atten(ADC.ATTN_11DB)
-                
-        #Measured Data
-        timestamp = get_timestamp()
-        esp_freq = machine.freq() / 1000000 # MHz
-        esp_temp = round((esp32.raw_temperature() - 32) / 1.8, 1)
-        env_temp = sensor.temperature()
-        env_humi = sensor.humidity()
-        env_brig = ldr.read()
-        
-        # Sekunde warten zur Sicherheit
-        time.sleep(1)
-        
-    except Exception as e:
-        esp_temp = 0.0
-        print("FEHLER: " + e)
+        dht11.measure()
+        temp = dht11.temperature()
+        humi = dht11.humidity()
+        brig = ldr.read()
+        eco2 = 0
+        if sensor:
+            eco2, _ = sensor.read_data()
+    except:
+        temp, humi, brig, eco2 = 0, 0, 0, 0
 
-    # Hier später echte Sensordaten einfügen
-    data = {
-        "TIMESTAMP": timestamp,
-        "ESP_FREQ": esp_freq,
-        "ESP_TEMP": esp_temp,
-        "ENV_TEMP": env_temp,
-        "ENV_HUMI": env_humi,
-        "ENV_CO2P": 0,
-        "ENV_BRIG": env_brig
+    return {
+        "TIMESTAMP": get_timestamp(),
+        "ESP_HWID": UNIQUE_ID,
+        "ESP_FREQ": machine.freq() // 1000000,
+        "ESP_TEMP": round((esp32.raw_temperature() - 32) / 1.8, 1),
+        "ENV_TEMP": temp,
+        "ENV_HUMI": humi,
+        "ENV_CO2P": eco2,
+        "ENV_BRIG": read_lux(brig)
     }
-    return json.dumps(data)
 
-if __name__ == "__main__":
+def oled_metrics(metrics: dict):
+    oled.fill(0)
+    oled.text("Cloud: {}".format(THING_NAME[-12:]), 0, 0) # Zeigt Teil der ID
+    oled.text("Temp:  {}C".format(metrics["ENV_TEMP"]), 0, 10)
+    oled.text("Humi:  {}%".format(metrics["ENV_HUMI"]), 0, 20)
+    oled.text("eCO2:  {}ppm".format(metrics["ENV_CO2P"]), 0, 30)
+    oled.text("Brig:  {}lx".format(metrics["ENV_BRIG"]), 0, 40)
+    oled.show()
+
+def connect_wifi():
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    if not wlan.isconnected():
+        print("Verbinde mit WiFi...")
+        wlan.connect(WIFI_SSID, WIFI_PWD)
+        for _ in range(15):
+            if wlan.isconnected(): break
+            time.sleep(1)
     
-    # 1. Mit WiFi verbinden
-    ip = connect_wifi()
-    if not ip:
-        print("Kritischer Fehler: Kein Netzwerk. Neustart in 10s...")
-        time.sleep(10)
-        machine.reset()
+    if wlan.isconnected():
+        ip = wlan.ifconfig()[0]
+        print(f"Verbunden! IP: {ip}, DNS: {wlan.ifconfig()[3]}")
+        return ip
+    return None
 
-    # 2. Socket Server vorbereiten
-    try:
-        # Socket erstellen
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        # Erlaubt den sofortigen Neustart des Ports, falls der Server crasht
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-        # Binden an IP und Port
-        s.bind(('', SERVER_PORT))
-        s.listen(5) # Max 5 Wartende Verbindungen
-        print(f">>> Server bereit auf: http://{ip}/metrics")
-        print(">>> Drücke Strg+C zum Beenden.")
-        
-    except OSError as e:
-        print(f"Fehler beim Starten des Sockets: {e}")
-        machine.reset()
-
-    # 3. Endlosschleife für Anfragen
+# --- ASYNC TASKS ---
+async def dweet_publisher():
+    """Sendet die Sensordaten per GET-Request an die URL-Parameter."""
+    # Basis-URL
+    base_url = "http://dweet.me:3333/publish/yoink/for/{}".format(THING_NAME)
+    
     while True:
+        gc.collect()
         try:
-            # Auf Verbindung warten (blockiert, bis jemand anfragt)
-            conn, addr = s.accept()
+            # 1. Daten generieren
+            data = create_metrics_json()
             
-            # Timeout setzen, falls Client nichts sendet
-            conn.settimeout(2.0)
+            # 2. Daten in URL-Parameter umwandeln (?temp=20&humi=50...)
+            params = urlencode(data)
+            full_url = base_url + params
             
-            # Anfrage empfangen (wir lesen nur die ersten 1024 Bytes, das reicht für die URL)
-            request = conn.recv(1024)
-            request_str = str(request)
+            print(f">>> Sende an: {full_url}")
             
-            # Routing
-            if "GET /metrics" in request_str:
-                # Metriken senden
-                json_data = create_metrics_json()
-                response = (
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: application/json\r\n"
-                    "Connection: close\r\n"
-                    "Access-Control-Allow-Origin: *\r\n" # Erlaubt Zugriff von anderen Webseiten
-                    "\r\n"
-                    + json_data
-                )
-                conn.send(response.encode())
-                # Optional: Kurzes Log
-                # print(f"Metriken gesendet an {addr[0]}")
-                
-            elif "GET /healthcheck" in request_str:
-                # Test-Seite
-                conn.send(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nHealthcheck OK")
-                
-            else:
-                # 404 Fehlerseite
-                conn.send(b"HTTP/1.1 404 Not Found\r\n\r\nNot Found")
-
-            # Verbindung sauber schließen
-            conn.close()
-
-        except OSError as e:
-            # Fehler (z.B. Timeout) abfangen, damit der Server nicht abstürzt
-            conn.close()
+            # 3. WICHTIG: Nutze .get() statt .post()
+            res = requests.get(full_url)
+            
+            # Debugging
+            print(f">>> Status: {res.status_code}")
+            print(f">>> Server Antwort: {res.text}")
+            
+            res.close()
+            print(">>> Daten erfolgreich übertragen!")
             
         except Exception as e:
-            print(f"Server-Fehler: {e}")
-            # Bei kritischen Fehlern kurz warten
-            time.sleep(1)
+            print("Dweet.me Fehler:", e)
+        
+        await asyncio.sleep(10)
 
+async def handle_client(reader, writer):
+    """Verarbeitet lokale HTTP Anfragen (z.B. für Monitoring im selben WLAN)."""
+    try:
+        request_line = await reader.readline()
+        while await reader.readline() != b"\r\n": pass
+        
+        request = request_line.decode().strip()
+        if "GET /metrics" in request:
+            data = create_metrics_json()
+            response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + json.dumps(data)
+            writer.write(response.encode())
+        else:
+            writer.write(b"HTTP/1.1 404 Not Found\r\n\r\n")
+        
+        await writer.drain()
+        await writer.wait_closed()
+    except Exception as e:
+        print("Server Fehler:", e)
+    finally:
+        gc.collect()
 
+async def display_updater():
+    """Aktualisiert das OLED alle 2 Sekunden."""
+    while True:
+        data = create_metrics_json()
+        oled_metrics(data)
+        await asyncio.sleep(2)
 
+async def main():
+    ip = connect_wifi()
+    if not ip:
+        print("Kein WiFi. Neustart in 10s...")
+        await asyncio.sleep(10)
+        machine.reset()
+    
+    ntptime.settime()
+    
+    # Lokaler Server & Cloud Tasks
+    server = asyncio.start_server(handle_client, "0.0.0.0", SERVER_PORT)
+    
+    print("-" * 30)
+    print(f"LOKAL:  http://{ip}/metrics")
+    print(f"REMOTE: http://dweet.me:3333/publish/yoink/for/{THING_NAME}")
+    print("-" * 30)
+
+    await asyncio.gather(
+        server, 
+        display_updater(),
+        dweet_publisher()
+    )
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Beendet.")
