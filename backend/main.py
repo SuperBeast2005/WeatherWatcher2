@@ -1,62 +1,16 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from pydantic import BaseModel
-from typing import List, Dict, Optional
-import sqlite3
-import uuid
-from datetime import datetime, timedelta
+from fastapi import FastAPI,HTTPException
+import requests
+from models import *
+from helpers import *
 
-app = FastAPI(title="WeatherWatcher API")
+app = FastAPI()
 
-DB = "weatherwatcher.db"
 
-# -------------------
-# Helpers
-# -------------------
-def db():
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    return conn
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(periodic_request())
 
-def now():
-    return datetime.utcnow().isoformat()
 
-# -------------------
-# Models
-# -------------------
-class SensorData(BaseModel):
-    co2: int
-    temperature: float
-    humidity: float
-    light: int
-    timestamp: str
-
-class ThresholdRange(BaseModel):
-    min: float
-    low: float
-    high: float
-    max: float
-
-class PlantThresholds(BaseModel):
-    co2: ThresholdRange
-    temperature: ThresholdRange
-    humidity: ThresholdRange
-    light: ThresholdRange
-
-class Recommendation(BaseModel):
-    id: str
-    type: str
-    message: str
-
-class PlantCreate(BaseModel):
-    name: str
-    species: str
-    espId: Optional[str]
-    thresholds: PlantThresholds
-    recommendations: List[Recommendation] = []
-
-class ESPCreate(BaseModel):
-    name: str
-    ip: str
 
 # -------------------
 # REST: Plants
@@ -64,53 +18,53 @@ class ESPCreate(BaseModel):
 @app.get("/api/plants")
 def get_plants():
     c = db()
-    plants = c.execute("SELECT * FROM plants").fetchall()
+    plants = c.execute("SELECT * FROM plant").fetchall()
     return [dict(p) for p in plants]
 
 @app.get("/api/plants/{plant_id}")
 def get_plant(plant_id: str):
     c = db()
-    plant = c.execute("SELECT * FROM plants WHERE id=?", (plant_id,)).fetchone()
+    plant = c.execute("SELECT * FROM plant WHERE id=?", (plant_id,)).fetchone()
     if not plant:
         raise HTTPException(404, "Plant not found")
 
-    current = c.execute(
-        "SELECT * FROM sensor_data WHERE plant_id=? ORDER BY timestamp DESC LIMIT 1",
-        (plant_id,)
-    ).fetchone()
+    print(plant)
 
-    history = c.execute(
-        "SELECT * FROM sensor_data WHERE plant_id=? ORDER BY timestamp DESC LIMIT 100",
-        (plant_id,)
-    ).fetchall()
+    current = c.execute(
+        "SELECT * FROM sensor_data WHERE ESP_ID=? ORDER BY timestamp DESC LIMIT 1",
+        (plant["ESP_ID"],)
+    ).fetchone()
 
     thresholds = c.execute(
         "SELECT * FROM plant_thresholds WHERE plant_id=?",
         (plant_id,)
     ).fetchone()
 
-    recs = c.execute(
-        "SELECT id,type,message FROM recommendations WHERE plant_id=?",
-        (plant_id,)
-    ).fetchall()
+    recs = evaluate_sensor_data(current, thresholds)
+    print(recs)
 
     return {
         **dict(plant),
         "currentData": dict(current) if current else None,
-        "history": [dict(h) for h in history],
         "thresholds": dict(thresholds) if thresholds else None,
-        "recommendations": [dict(r) for r in recs]
+        "recommendations": recs
     }
 
 @app.post("/api/plants")
 def create_plant(payload: PlantCreate):
-    plant_id = str(uuid.uuid4())
     c = db()
 
+    time_created = now()
+
     c.execute(
-        "INSERT INTO plants VALUES (?,?,?,?)",
-        (plant_id, payload.espId, payload.name, payload.species)
+        "INSERT INTO plant VALUES (null,?,?,?,?)",
+        (payload.espId, payload.name, time_created , payload.species)
     )
+
+    plant_id = c.execute("SELECT id FROM plant WHERE created_at=?",
+                         (time_created,)).fetchone()["id"]
+    print(plant_id)
+
 
     t = payload.thresholds
     c.execute(
@@ -124,30 +78,26 @@ def create_plant(payload: PlantCreate):
         )
     )
 
-    for r in payload.recommendations:
-        c.execute(
-            "INSERT INTO recommendations VALUES (?,?,?,?,?)",
-            (r.id, plant_id, r.type, r.message, now())
-        )
-
     c.commit()
     return {"id": plant_id}
 
 @app.delete("/api/plants/{plant_id}", status_code=204)
 def delete_plant(plant_id: str):
     c = db()
-    c.execute("DELETE FROM plants WHERE id=?", (plant_id,))
+    c.execute("DELETE FROM plant WHERE id=?", (plant_id,))
     c.commit()
 
 @app.get("/api/plants/{plant_id}/history")
 def plant_history(plant_id: str, hours: int = 24):
     since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
     c = db()
+    esp_id = c.execute("SELECT ESP_ID FROM plant WHERE id=?", (plant_id,)).fetchone()["ESP_ID"]
+    print(esp_id)
     data = c.execute(
-        "SELECT * FROM sensor_data WHERE plant_id=? AND timestamp>=?",
-        (plant_id, since)
+        "SELECT * FROM sensor_data WHERE ESP_ID=? AND timestamp>=?",
+        (esp_id, since)
     ).fetchall()
-    return [dict(d) for d in data]
+    return data
 
 # -------------------
 # REST: ESPs
@@ -155,42 +105,51 @@ def plant_history(plant_id: str, hours: int = 24):
 @app.get("/api/esps")
 def get_esps():
     c = db()
-    return [dict(e) for e in c.execute("SELECT * FROM esps").fetchall()]
+    response = []
+    for e in c.execute("SELECT * FROM ESP").fetchall():
+        esp_id = e["esp_id"]
+        name = e["name"]
+        url = e["esp_url"]
+
+        status = "offline"
+        frequency = None
+        temperature = None
+        hwid = None
+
+        current_sensor = requests.get(url).json()
+
+        if current_sensor["content"] and current_sensor["content"] != "null":
+            status = "online"
+            frequency = current_sensor["content"]["ESP_FREQ"]
+            temperature = current_sensor["content"]["ESP_TEMP"]
+            hwid = current_sensor["content"]["ESP_HWID"]
+
+        r = {
+            "id" : esp_id,
+            "name" : name,
+            "url" : url,
+            "status" : status,
+            "frequency" : frequency,
+            "temperature" : temperature,
+            "hwid" : hwid,
+        }
+
+        response.append(r)
+
+    return [dict(e) for e in c.execute("SELECT * FROM ESP").fetchall()]
 
 @app.post("/api/esps")
 def create_esp(payload: ESPCreate):
-    esp_id = str(uuid.uuid4())
     c = db()
     c.execute(
-        "INSERT INTO esps (id,name,ip,status) VALUES (?,?,?,?)",
-        (esp_id, payload.name, payload.ip, "offline")
+        "INSERT INTO ESP (esp_id,name,esp_url) VALUES (null,?,?)",
+        (payload.name, payload.url)
     )
     c.commit()
-    return {"id": esp_id}
+    return True
 
 @app.delete("/api/esps/{esp_id}", status_code=204)
 def delete_esp(esp_id: str):
     c = db()
-    c.execute("DELETE FROM esps WHERE id=?", (esp_id,))
+    c.execute("DELETE FROM ESP WHERE esp_id=?", (esp_id,))
     c.commit()
-
-# -------------------
-# WebSocket
-# -------------------
-clients: List[WebSocket] = []
-
-@app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    clients.append(ws)
-
-    try:
-        while True:
-            msg = await ws.receive_json()
-            # subscribe currently ignored (broadcast-only)
-    except WebSocketDisconnect:
-        clients.remove(ws)
-
-async def broadcast(payload: dict):
-    for ws in clients:
-        await ws.send_json(payload)
