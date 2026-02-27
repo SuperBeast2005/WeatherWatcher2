@@ -1,8 +1,9 @@
 import asyncio
-import sqlite3
+import logging
 import httpx
 import sqlite3
 from datetime import datetime, timedelta
+log = logging.getLogger("uvicorn.error")
 
 
 DB = "db.db"
@@ -90,7 +91,7 @@ async def periodic_request():
                 for esp in list_of_esps:
                     r = (await client.get(esp["esp_url"])).json()
                     if r["content"] is None or r["content"] == "null":
-                        print("ESP is offline: " + esp["espid"])
+                        log.error("ESP is offline: " + str(esp["esp_id"]))
                         continue
                     else:
                         #print("Sucefully fetched information from ESP: " + str(r["id"]))
@@ -106,6 +107,6 @@ async def periodic_request():
                                   ))
                         c.commit()
             except Exception as e:
-                print("Error:", e)
+                log.error(e)
 
             await asyncio.sleep(esp_request_cycle_time)
