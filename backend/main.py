@@ -1,5 +1,5 @@
-import logging
-
+from fastapi import FastAPI,HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import requests
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -9,6 +9,14 @@ from models import *
 
 app = FastAPI(title="WeatherWatcher API")
 log = logging.getLogger("uvicorn.error")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
