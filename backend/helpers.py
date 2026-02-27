@@ -1,5 +1,9 @@
 import asyncio
 import logging
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
 import httpx
 import sqlite3
 from datetime import datetime, timedelta
@@ -8,6 +12,10 @@ log = logging.getLogger("uvicorn.error")
 
 DB = "db.db"
 esp_request_cycle_time = 30 #in seconds
+
+gmail_user = "weatherwatcher.provadis@gmail.com"
+gmail_pwd = "Provadis123"
+alert_recipients = [gmail_user]
 
 
 def db():
@@ -81,32 +89,63 @@ def evaluate_sensor_data(sensor: dict, thresholds: dict) -> dict:
     return results
 
 async def periodic_request():
+    previous_status_by_esp_id = {}
     async with httpx.AsyncClient() as client:
         c = db()
-        list_of_esps = c.execute("SELECT * FROM ESP").fetchall()
-        for esp in list_of_esps:
-            print("ESP found in db: " + esp["name"])
         while True:
-            try:
-                for esp in list_of_esps:
-                    r = (await client.get(esp["esp_url"])).json()
-                    if r["content"] is None or r["content"] == "null":
-                        log.error("ESP is offline: " + str(esp["esp_id"]))
-                        continue
-                    else:
-                        #print("Sucefully fetched information from ESP: " + str(r["id"]))
-                        #print(r["content"])
-                        c.execute("""
-                                  INSERT INTO sensor_data (ESP_ID,timestamp,esp_freq,esp_temp,env_temp,
-                                                           env_humi,env_co2p,env_brig,ESP_HWID)
-                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                  """,
-                                  (
-                                      r["id"],r["content"]["TIMESTAMP"],r["content"]["ESP_FREQ"],r["content"]["ESP_TEMP"],
-                                      r["content"]["ENV_TEMP"],r["content"]["ENV_HUMI"],r["content"]["ENV_CO2P"],r["content"]["ENV_BRIG"],r["content"]["ESP_HWID"]
-                                  ))
+            list_of_esps = c.execute("SELECT * FROM ESP").fetchall()
+            for esp in list_of_esps:
+                esp_id = esp["esp_id"]
+                esp_name = esp["name"]
+                esp_url = esp["esp_url"]
+                current_status = "offline"
+
+                try:
+                    response = await client.get(esp_url, timeout=5.0)
+                    response.raise_for_status()
+                    r = response.json()
+                    content = r.get("content")
+
+                    if content is not None and content != "null":
+                        current_status = "online"
+                        c.execute(
+                            """
+                            INSERT INTO sensor_data (ESP_ID,timestamp,esp_freq,esp_temp,env_temp,
+                                                     env_humi,env_co2p,env_brig,ESP_HWID)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                r["id"], content["TIMESTAMP"], content["ESP_FREQ"], content["ESP_TEMP"],
+                                content["ENV_TEMP"], content["ENV_HUMI"], content["ENV_CO2P"], content["ENV_BRIG"], content["ESP_HWID"]
+                            ),
+                        )
                         c.commit()
-            except Exception as e:
-                log.error(e)
+                except Exception as e:
+                    log.error("Polling failed for esp_id=%s url=%s: %s", esp_id, esp_url, e)
+
+                previous_status = previous_status_by_esp_id.get(esp_id)
+                if previous_status == "online" and current_status == "offline":
+                    log.error("ESP is offline: %s (%s)", esp_name, esp_id)
+                    send_email(
+                        subject=f"ESP offline: {esp_name}",
+                        body=f"ESP mit ID {esp_id} ({esp_name}) ist offline.",
+                        recipients=alert_recipients,
+                    )
+                elif previous_status == "offline" and current_status == "online":
+                    log.info("ESP back online: %s (%s)", esp_name, esp_id)
+
+                previous_status_by_esp_id[esp_id] = current_status
 
             await asyncio.sleep(esp_request_cycle_time)
+
+def send_email(subject, body, recipients=None):
+    if recipients is None:
+        recipients = alert_recipients
+    msg = MIMEText(body)
+    msg['Subject'] = subject
+    msg['From'] = gmail_user
+    msg['To'] = ', '.join(recipients)
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp_server:
+        smtp_server.login(gmail_user, gmail_pwd)
+        smtp_server.sendmail(gmail_user, recipients, msg.as_string())
+    log.info("Alert email sent to %s", ", ".join(recipients))
