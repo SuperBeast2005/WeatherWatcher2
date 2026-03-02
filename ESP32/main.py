@@ -6,7 +6,7 @@ import time
 import json
 import uasyncio as asyncio
 import gc
-import urequests as requests  # Erforderlich für Cloud-Upload
+import urequests as requests 
 from machine import RTC, Pin, SoftI2C, ADC
 import ssd1306
 import dht
@@ -124,6 +124,9 @@ async def dweet_publisher():
     
     while True:
         gc.collect()
+        print(gc.mem_free())
+        if gc.mem_free() < 15000:
+            machine.reset()
         try:
             # 1. Daten generieren
             data = create_metrics_json()
@@ -205,3 +208,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Beendet.")
+    
