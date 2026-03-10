@@ -68,15 +68,23 @@ def read_lux(adc_value):
     lux = math.pow(RL10 / resistance, 1 / GAMMA) * 10
     return round(lux, 1)
 
+last_valid_co2 = 400
+
 def create_metrics_json():
+    global last_valid_co2
     try:
         dht11.measure()
         temp = dht11.temperature()
         humi = dht11.humidity()
         brig = ldr.read()
-        eco2 = 0
         if sensor:
             eco2, _ = sensor.read_data()
+            if eco2 is None:
+                eco2 = last_valid_co2
+                print("CCS811 Threshold/Error - Halte letzten Wert:", last_valid_co2)
+            if eco2 is not None:
+                last_valid_co2 = eco2
+            
     except:
         temp, humi, brig, eco2 = 0, 0, 0, 0
 
@@ -116,6 +124,10 @@ def connect_wifi():
         return ip
     return None
 
+def mem_clean():
+    if gc.mem_free() < 15000:
+            machine.reset()
+
 # --- ASYNC TASKS ---
 async def dweet_publisher():
     """Sendet die Sensordaten per GET-Request an die URL-Parameter."""
@@ -125,8 +137,7 @@ async def dweet_publisher():
     while True:
         gc.collect()
         print(gc.mem_free())
-        if gc.mem_free() < 15000:
-            machine.reset()
+        mem_clean()
         try:
             # 1. Daten generieren
             data = create_metrics_json()
@@ -150,7 +161,7 @@ async def dweet_publisher():
         except Exception as e:
             print("Dweet.me Fehler:", e)
         
-        await asyncio.sleep(10)
+        await asyncio.sleep(3)
 
 async def handle_client(reader, writer):
     """Verarbeitet lokale HTTP Anfragen (z.B. für Monitoring im selben WLAN)."""
@@ -172,6 +183,7 @@ async def handle_client(reader, writer):
         print("Server Fehler:", e)
     finally:
         gc.collect()
+        mem_clean()
 
 async def display_updater():
     """Aktualisiert das OLED alle 2 Sekunden."""
@@ -208,4 +220,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Beendet.")
-    
+    except Exception:
+        machine.reset()
