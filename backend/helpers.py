@@ -3,7 +3,29 @@ import logging
 import httpx
 import sqlite3
 from datetime import datetime, timedelta
+from fastapi import WebSocket
 log = logging.getLogger("uvicorn.error")
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                log.error("Failed to send WS message: %s", e)
+
+manager = ConnectionManager()
 
 
 DB = "db.db"
@@ -19,6 +41,14 @@ def db():
 
 def now():
     return datetime.utcnow().isoformat()
+
+def safe_float(val):
+    if val is None or val == "None" or val == "":
+        return 0.0
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return 0.0
 
 def check_threshold(value, min_v, max_v, low_v, high_v):
     print(value, min_v, max_v, low_v, high_v)
@@ -82,31 +112,62 @@ def evaluate_sensor_data(sensor: dict, thresholds: dict) -> dict:
 
 async def periodic_request():
     async with httpx.AsyncClient() as client:
-        c = db()
-        list_of_esps = c.execute("SELECT * FROM ESP").fetchall()
-        for esp in list_of_esps:
-            print("ESP found in db: " + esp["name"])
         while True:
+            c = db()
             try:
+                list_of_esps = c.execute("SELECT * FROM ESP").fetchall()
                 for esp in list_of_esps:
-                    r = (await client.get(esp["esp_url"])).json()
-                    if r["content"] is None or r["content"] == "null":
-                        log.error("ESP is offline: " + str(esp["esp_id"]))
-                        continue
-                    else:
-                        #print("Sucefully fetched information from ESP: " + str(r["id"]))
-                        #print(r["content"])
+                    try:
+                        resp = await client.get(esp["esp_url"], timeout=5)
+                        resp.raise_for_status()
+                        r = resp.json()
+                        
+                        content = r.get("content")
+                        if content is None or content == "null":
+                            log.debug("ESP is offline or no data: %s", esp["esp_id"])
+                            continue
+                        
+                        # Use HWID from JSON if available, otherwise fallback
+                        json_hwid = content.get("ESP_HWID") or ""
+                        timestamp = content.get("TIMESTAMP") or now()
+
                         c.execute("""
                                   INSERT INTO sensor_data (ESP_ID,timestamp,esp_freq,esp_temp,env_temp,
                                                            env_humi,env_co2p,env_brig,ESP_HWID)
                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                   """,
                                   (
-                                      r["id"],r["content"]["TIMESTAMP"],r["content"]["ESP_FREQ"],r["content"]["ESP_TEMP"],
-                                      r["content"]["ENV_TEMP"],r["content"]["ENV_HUMI"],r["content"]["ENV_CO2P"],r["content"]["ENV_BRIG"],r["content"]["ESP_HWID"]
+                                      esp["esp_id"],
+                                      timestamp,
+                                      safe_float(content.get("ESP_FREQ")),
+                                      safe_float(content.get("ESP_TEMP")),
+                                      safe_float(content.get("ENV_TEMP")),
+                                      safe_float(content.get("ENV_HUMI")),
+                                      safe_float(content.get("ENV_CO2P")),
+                                      safe_float(content.get("ENV_BRIG")),
+                                      json_hwid
                                   ))
                         c.commit()
+                        
+                        # Find which plant(s) belong to this ESP to notify frontend 
+                        plants = c.execute("SELECT id FROM plant WHERE ESP_ID=?", (esp["esp_id"],)).fetchall()
+                        for p in plants:
+                            await manager.broadcast({
+                                "type": "sensor_update",
+                                "plantId": str(p["id"]),
+                                "data": {
+                                    "co2": safe_float(content.get("ENV_CO2P")),
+                                    "temperature": safe_float(content.get("ENV_TEMP")),
+                                    "humidity": safe_float(content.get("ENV_HUMI")),
+                                    "light": safe_float(content.get("ENV_BRIG")),
+                                    "timestamp": str(timestamp)
+                                }
+                            })
+                    except (httpx.HTTPError, ValueError, KeyError) as e:
+                        log.warning("Polling error for ESP name=%s id=%s: %s", esp["name"], esp["esp_id"], e)
             except Exception as e:
-                log.error(e)
+                log.exception("Fatal error in periodic_request loop")
+            finally:
+                c.close()
 
             await asyncio.sleep(esp_request_cycle_time)

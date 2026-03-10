@@ -35,4 +35,4 @@ class PlantCreate(BaseModel):
 
 class ESPCreate(BaseModel):
     name: str
-    ip: str
+    url: str

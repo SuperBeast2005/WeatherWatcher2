@@ -2,7 +2,7 @@ from fastapi import FastAPI,HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from helpers import *
 from models import *
@@ -25,6 +25,24 @@ async def startup_event():
     log.info("Started periodic ESP polling task")
 
 # -------------------
+# WebSockets
+# -------------------
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # We just keep the connection open to send data
+            # Optionally we can listen to incoming messages from the frontend
+            data = await websocket.receive_text()
+            pass 
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        log.error("WebSocket error: %s", e)
+        manager.disconnect(websocket)
+
+# -------------------
 # REST: ESPs
 # -------------------
 @app.get("/api/plants")
@@ -32,7 +50,16 @@ def get_plants():
     c = db()
     try:
         plants = c.execute("SELECT * FROM plant").fetchall()
-        return [dict(p) for p in plants]
+        result = []
+        for p in plants:
+            plant_dict = dict(p)
+            current = c.execute(
+                "SELECT * FROM sensor_data WHERE ESP_ID=? ORDER BY timestamp DESC LIMIT 1",
+                (p["ESP_ID"],)
+            ).fetchone()
+            plant_dict["currentData"] = dict(current) if current else None
+            result.append(plant_dict)
+        return result
     except sqlite3.Error:
         log.exception("Failed to fetch plants")
         raise HTTPException(status_code=500, detail="Failed to load plants")
@@ -297,7 +324,10 @@ def get_esps():
 
 @app.post("/api/esps")
 def create_esp(payload: ESPCreate):
-    esp_url = f"http://{payload.ip}"
+    esp_url = payload.url
+    if not esp_url.startswith("http://") and not esp_url.startswith("https://"):
+        esp_url = f"http://{esp_url}"
+
     c = db()
     try:
         cursor = c.execute(
@@ -306,7 +336,7 @@ def create_esp(payload: ESPCreate):
         )
         esp_id = cursor.lastrowid
         c.commit()
-        log.info("Created ESP name=%s ip=%s", payload.name, payload.ip)
+        log.info("Created ESP name=%s url=%s", payload.name, esp_url)
         return {
             "id": esp_id,
             "name": payload.name,
