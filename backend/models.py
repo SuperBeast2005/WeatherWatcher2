@@ -30,9 +30,9 @@ class Recommendation(BaseModel):
 class PlantCreate(BaseModel):
     name: str
     species: str
-    espId: Optional[int]
+    espId: Optional[str]
     thresholds: PlantThresholds
 
 class ESPCreate(BaseModel):
     name: str
-    url: str
+    ip: str

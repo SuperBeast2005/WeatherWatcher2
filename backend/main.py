@@ -92,11 +92,11 @@ def create_plant(payload: PlantCreate):
     c = db()
     try:
         time_created = now()
-        c.execute(
+        cursor = c.execute(
             "INSERT INTO plant (ESP_ID, name, created_at, strain) VALUES (?,?,?,?)",
             (payload.espId, payload.name, time_created, payload.species),
         )
-        plant_id = c.lastrowid
+        plant_id = cursor.lastrowid
         if plant_id is None:
             raise HTTPException(status_code=500, detail="Failed to create plant")
 
@@ -126,7 +126,12 @@ def create_plant(payload: PlantCreate):
 
         c.commit()
         log.info("Created plant id=%s name=%s", plant_id, payload.name)
-        return {"id": plant_id}
+        return {
+            "id": str(plant_id),
+            "name": payload.name,
+            "species": payload.species,
+            "ESP_ID": payload.espId,
+        }
     except HTTPException:
         c.rollback()
         raise
@@ -143,15 +148,67 @@ def delete_plant(plant_id: str):
     c = db()
     try:
         result = c.execute("DELETE FROM plant WHERE id=?", (plant_id,))
-        c.commit()
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Plant not found")
+        c.execute("DELETE FROM plant_thresholds WHERE plant_id=?", (plant_id,))
+        c.commit()
     except HTTPException:
+        c.rollback()
         raise
     except sqlite3.Error:
         c.rollback()
         log.exception("Database error while deleting plant_id=%s", plant_id)
         raise HTTPException(status_code=500, detail="Failed to delete plant")
+    finally:
+        c.close()
+
+
+@app.patch("/api/plants/{plant_id}/thresholds")
+def update_thresholds(plant_id: str, payload: PlantThresholds):
+    c = db()
+    try:
+        plant = c.execute("SELECT * FROM plant WHERE id=?", (plant_id,)).fetchone()
+        if not plant:
+            raise HTTPException(status_code=404, detail="Plant not found")
+
+        c.execute(
+            """UPDATE plant_thresholds SET
+                co2_min=?, co2_low=?, co2_high=?, co2_max=?,
+                temperature_min=?, temperature_low=?, temperature_high=?, temperature_max=?,
+                humidity_min=?, humidity_low=?, humidity_high=?, humidity_max=?,
+                light_min=?, light_low=?, light_high=?, light_max=?
+            WHERE plant_id=?""",
+            (
+                payload.co2.min, payload.co2.low, payload.co2.high, payload.co2.max,
+                payload.temperature.min, payload.temperature.low, payload.temperature.high, payload.temperature.max,
+                payload.humidity.min, payload.humidity.low, payload.humidity.high, payload.humidity.max,
+                payload.light.min, payload.light.low, payload.light.high, payload.light.max,
+                plant_id,
+            ),
+        )
+        c.commit()
+        log.info("Updated thresholds for plant_id=%s", plant_id)
+
+        # Return updated plant detail
+        current = c.execute(
+            "SELECT * FROM sensor_data WHERE ESP_ID=? ORDER BY timestamp DESC LIMIT 1",
+            (plant["ESP_ID"],)
+        ).fetchone()
+        thresholds = c.execute(
+            "SELECT * FROM plant_thresholds WHERE plant_id=?", (plant_id,)
+        ).fetchone()
+
+        return {
+            **dict(plant),
+            "currentData": dict(current) if current else None,
+            "thresholds": dict(thresholds) if thresholds else None,
+        }
+    except HTTPException:
+        raise
+    except sqlite3.Error:
+        c.rollback()
+        log.exception("Database error while updating thresholds for plant_id=%s", plant_id)
+        raise HTTPException(status_code=500, detail="Failed to update thresholds")
     finally:
         c.close()
 
@@ -222,7 +279,7 @@ def get_esps():
                 {
                     "id": esp_id,
                     "name": name,
-                    "url": url,
+                    "esp_url": url,
                     "status": status,
                     "frequency": frequency,
                     "temperature": temperature,
@@ -240,15 +297,25 @@ def get_esps():
 
 @app.post("/api/esps")
 def create_esp(payload: ESPCreate):
+    esp_url = f"http://{payload.ip}"
     c = db()
     try:
-        c.execute(
+        cursor = c.execute(
             "INSERT INTO ESP (name, esp_url) VALUES (?, ?)",
-            (payload.name, payload.url),
+            (payload.name, esp_url),
         )
+        esp_id = cursor.lastrowid
         c.commit()
-        log.info("Created ESP name=%s url=%s", payload.name, payload.url)
-        return True
+        log.info("Created ESP name=%s ip=%s", payload.name, payload.ip)
+        return {
+            "id": esp_id,
+            "name": payload.name,
+            "esp_url": esp_url,
+            "status": "offline",
+            "frequency": None,
+            "temperature": None,
+            "hwid": None,
+        }
     except sqlite3.Error:
         c.rollback()
         log.exception("Database error while creating ESP")
