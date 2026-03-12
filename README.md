@@ -20,9 +20,7 @@ This project will work in a container structure (probably Docker or Kubernetes) 
 
 1. Frontend Webserver (Dashboarding with React)
 2. Backend Webserver (REST API with Spring)
-3. Database (Postgres)
-
-![component flowchart](Documentation/images/weatherwatcher1.png)
+3. Database (SQLite)
 
 And one Micro Python Webserver on each ESP32.
 
